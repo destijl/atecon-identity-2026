@@ -19,12 +19,13 @@ without putting a token in the sandbox.
 | # | On screen | What it shows |
 |---|---|---|
 | 1 | `kubectl ate get egress-policy` | The agent's egress policy: Gmail gets Alice's OAuth token from the Auth Manager credential provider, the email app gets an actor JWT, everything else is denied. |
-| 2 | `agent search` | Gmail call is refused by Substrate's egress gateway (403): Alice hasn't granted access yet. |
-| 2b | `agent consent` | The app hands the agent a consent link. It knows which agent is asking from an actor JWT the gateway injected. |
-| 3 | browser | Alice consents to "View your email messages and settings" (`gmail.readonly`). The link carries `prompt=consent`, so Google shows the screen on every take. |
-| 4 | `agent search` | Same call now returns 200 with up to 3 subjects matching `Agent Substrate Day:`. The agent never holds the token. |
-| 5 | `agent trash` | Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`: the token can't delete mail. |
-| 6 | logs | The egress gateway logs each Gmail call (403, 200, 403) under the agent's SPIFFE ID; the credential provider logs which actor got which user's token. |
+| 2 | `gcloud agent-identity auth-providers describe` | The OAuth client in Auth Manager: allowed scope `gmail.readonly`, Auth Manager's redirect URL (it receives and stores the tokens), and the email app's continue URI. |
+| 3 | `agent search` | Gmail call is refused by Substrate's egress gateway (403): Alice hasn't granted access yet. |
+| 3b | `agent consent` | The app hands the agent a consent link. It knows which agent is asking from an actor JWT the gateway injected. |
+| 4 | browser | Alice consents to "View your email messages and settings" (`gmail.readonly`). The link carries `prompt=consent`, so Google shows the screen on every take. |
+| 5 | `agent search` | Same call now returns 200 with up to 3 subjects matching `Agent Substrate Day:`. The agent never holds the token. |
+| 6 | `agent trash` | Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`: the token can't delete mail. |
+| 7 | logs | The egress gateway logs each Gmail call (403, 200, 403) under the agent's SPIFFE ID; the credential provider logs which actor got which user's token. |
 
 ## How it works
 
@@ -124,9 +125,9 @@ demo/demo.sh       # press ENTER to advance each step
 demo/demo.sh -n    # unattended: no typing or pauses
 ```
 
-- At step 3 the script prints a short consent link and saves the full one to
-  `.cache/consent-url.txt`. Open it in a browser signed in as `DEMO_EMAIL` and
-  allow access. The script continues by itself once the grant is finalized.
+- At step 4 the script prints the consent link (also saved to
+  `.cache/consent-url.txt`). Paste it into a browser signed in as `DEMO_EMAIL`
+  and allow access. The script continues by itself once the grant is finalized.
 - Only the newest consent link works: each request starts a new attempt.
 - Run `demo/reset.sh` before each take.
 - Each step starts on a cleared screen; `TOP_PAD=6 demo/demo.sh` adds more

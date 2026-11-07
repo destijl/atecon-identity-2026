@@ -90,23 +90,31 @@ kubectl ate get egress-policy "${ACTOR}" -a "${ATESPACE}" -o yaml 2>/dev/null \
   | awk '/^metadata:/{skip=1; next} /^[^ ]/{skip=0} !skip'
 echo
 note "gmail.googleapis.com: the gateway swaps in Alice's OAuth token (gmail.readonly) from a credential provider"
-note "email-app: the gateway swaps in a short-lived actor JWT naming this agent"
+note "email-app (consent links): the gateway swaps in a short-lived actor JWT, so the app knows which agent is asking"
 note "anything else: denied"
 
-section "2. The agent searches Alice's Gmail for subject \"Agent Substrate Day:\""
+section "2. The OAuth client, registered in Google Cloud Agent Auth Manager"
+p "gcloud agent-identity auth-providers describe ${AUTH_PROVIDER_NAME} --location ${REGION}"
+gcloud agent-identity auth-providers describe "${AUTH_PROVIDER_NAME}" --project "${PROJECT_ID}" --location "${REGION}" \
+  --format=json 2>/dev/null \
+  | jq -C '{allowedScopes, redirectUrl: .authProviderTypeParams.threeLeggedOauth.redirectUrl, continueUri: .authProviderTypeParams.threeLeggedOauth.defaultContinueUri}'
+echo
+note "allowedScopes: the most this client can ever be granted (read-only Gmail)"
+note "redirectUrl: Google returns the code to Auth Manager, which stores the tokens; the agent never sees them"
+note "continueUri: Auth Manager then sends Alice's browser back to the email app to finish"
+
+section "3. The agent searches Alice's Gmail for subject \"Agent Substrate Day:\""
 pe "agent search"
 note "403 from Substrate's egress gateway: Alice hasn't granted access yet. Ask the app for a consent link."
 p "agent consent"
 CONSENT="$(curl -sS -m 60 "localhost:${PORT}/agent/consent")"
 jq -C '.authorizationUrl |= (if . then (.[0:60] + "…") else . end)' <<<"${CONSENT}"
 URL="$(jq -r '.authorizationUrl // empty' <<<"${CONSENT}")"
-if [[ -n "${URL}" ]]; then
-  printf '%s\n' "${URL}" > "${CACHE}/consent-url.txt"
-  command -v xdg-open >/dev/null && [[ -n "${DISPLAY:-}" ]] && { xdg-open "${URL}" >/dev/null 2>&1 || true; }
-fi
+[[ -n "${URL}" ]] && printf '%s\n' "${URL}" > "${CACHE}/consent-url.txt"
 
-section "3. Alice opens the link and grants read-only access (gmail.readonly)"
-echo "   (full link: .cache/consent-url.txt)"
+section "4. Alice opens the link and grants read-only access (gmail.readonly)"
+echo
+printf '%s\n' "${URL:-no consent link, see the response above}"
 echo
 printf '%s' "   waiting for consent "
 # Watch the app's log; asking /consent again would start a new attempt.
@@ -115,15 +123,15 @@ until kubectl -n email-app logs deploy/email-app --since-time="${START}" 2>/dev/
 done
 echo " ✓"
 
-section "4. Same call, same sandbox"
+section "5. Same call, same sandbox"
 pe "agent search"
 note "The agent never held a token: the gateway added it on the way out."
 
-section "5. The agent tries to trash a message"
+section "6. The agent tries to trash a message"
 pe "agent trash"
 note "Google refuses: the token is scoped to gmail.readonly"
 
-section "6. What the logs say"
+section "7. What the logs say"
 p "kubectl logs -n ate-system deploy/atenet-egress -c envoy | grep gmail"
 # One line per Gmail call the agent made; the per-message metadata reads
 # are left out to keep it short (and keep message IDs off screen).
