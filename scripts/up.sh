@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install Substrate and deploy the email demo on an existing GKE cluster.
+# Install Substrate and deploy the email demo on an existing GKE cluster
+# (scripts/setup.sh creates the cluster and other one-time resources first).
 # Idempotent: safe to re-run. Uses a private kubeconfig and registry auth
 # file under .cache/, never ~/.kube/config or ~/.docker/config.json.
 #
@@ -24,8 +25,14 @@ step "Registry auth (short-lived token, private auth file)"
 mkdir -p "${DOCKER_CONFIG}"; chmod 700 "${DOCKER_CONFIG}"
 gcloud auth print-access-token | podman login -u oauth2accesstoken --password-stdin "${REGION}-docker.pkg.dev" >/dev/null
 
-step "kubectl-ate from Substrate ${SUBSTRATE_COMMIT}"
-[[ "$(git -C "${SUBSTRATE_DIR}" rev-parse --short=8 HEAD)" == "${SUBSTRATE_COMMIT}"* ]] \
+step "Substrate source at ${SUBSTRATE_COMMIT}"
+if [[ -z "${SUBSTRATE_DIR:-}" ]]; then
+  SUBSTRATE_DIR="${CACHE}/substrate"
+  [[ -d "${SUBSTRATE_DIR}/.git" ]] || git clone -q "${SUBSTRATE_REPO:-https://github.com/agent-substrate/substrate}" "${SUBSTRATE_DIR}"
+  git -C "${SUBSTRATE_DIR}" -c advice.detachedHead=false checkout -q "${SUBSTRATE_COMMIT}" 2>/dev/null \
+    || { git -C "${SUBSTRATE_DIR}" fetch -q origin && git -C "${SUBSTRATE_DIR}" -c advice.detachedHead=false checkout -q "${SUBSTRATE_COMMIT}"; }
+fi
+[[ "$(git -C "${SUBSTRATE_DIR}" rev-parse HEAD)" == "${SUBSTRATE_COMMIT}"* ]] \
   || die "${SUBSTRATE_DIR} is not at ${SUBSTRATE_COMMIT}"
 (cd "${SUBSTRATE_DIR}" && go build -o "${CACHE}/bin/kubectl-ate" ./cmd/kubectl-ate)
 
