@@ -20,10 +20,11 @@ gcloud agent-identity auth-providers revoke-authorization "${AUTH_PROVIDER##*/}"
   --project "${PROJECT_ID}" --location "${REGION}" --user-id "${ATESPACE}" >/dev/null 2>&1 || true
 
 step "Recreate atespace ${ATESPACE} and actor ${ACTOR}"
+AGENT_REF="$(agent_ref)"   # resolve before deleting anything
 kubectl-ate delete actor "${ACTOR}" -a "${ATESPACE}" >/dev/null 2>&1 || true
 kubectl-ate create atespace "${ATESPACE}" >/dev/null 2>&1 || true
 kubectl-ate delete actor-template email-agent -a "${ATESPACE}" >/dev/null 2>&1 || true
-AGENT_IMAGE="$(cat "${CACHE}/agent.ref")" ATESPACE="${ATESPACE}" \
+AGENT_IMAGE="${AGENT_REF}" ATESPACE="${ATESPACE}" \
   envsubst '${AGENT_IMAGE} ${ATESPACE}' < "${ROOT}/deploy/actor-template.yaml.tmpl" > "${CACHE}/actor-template.yaml"
 kubectl-ate create actor-template -f "${CACHE}/actor-template.yaml"
 kubectl-ate create actor "${ACTOR}" -a "${ATESPACE}" --template email-agent

@@ -64,3 +64,15 @@ ensure_kubectl_ate() {
   step "Build kubectl-ate (${SUBSTRATE_COMMIT})"
   (cd "${SUBSTRATE_DIR}" && go build -o "${CACHE}/bin/kubectl-ate" ./cmd/kubectl-ate)
 }
+
+# agent_ref prints the digest-pinned agent image: the one this machine last
+# built (.cache/agent.ref), else the newest one in Artifact Registry (for
+# machines that only run the demo, e.g. a laptop).
+agent_ref() {
+  local ref=""
+  [[ -s "${CACHE}/agent.ref" ]] && ref="$(cat "${CACHE}/agent.ref")"
+  [[ -n "${ref}" ]] || ref="$(gcloud artifacts docker images list "${IMAGE_REPO}/agent" \
+    --sort-by=~UPDATE_TIME --limit=1 --format='value(format("{0}@{1}",package,version))' 2>/dev/null)"
+  [[ -n "${ref}" ]] || die "no agent image: run scripts/up.sh first"
+  printf '%s\n' "${ref}"
+}
