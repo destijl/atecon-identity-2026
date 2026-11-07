@@ -110,6 +110,14 @@ scripts/up.sh` to skip reinstalling Substrate).
 
 ## Run the demo
 
+You can run the demo from any machine (e.g. a laptop) once the environment is
+set up. Copy `demo.env` there (it's git-ignored). You need `gcloud` with
+`gke-gcloud-auth-plugin`, `kubectl`, `jq` and `curl`; `demo/reset.sh` also
+needs `go`, `git` and `envsubst`. On first run the scripts fetch cluster
+credentials into `.cache/kubeconfig` (your `~/.kube/config` is not touched),
+and `reset.sh` builds `kubectl-ate` from `SUBSTRATE_DIR` (or clones
+Substrate into `.cache/substrate` if that path doesn't exist).
+
 ```bash
 demo/reset.sh      # fresh agent, revoke any earlier grant
 demo/demo.sh       # press ENTER to advance each step

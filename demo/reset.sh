@@ -11,7 +11,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT}/demo.env"
 # shellcheck source=/dev/null
 source "${ROOT}/scripts/lib.sh"
-need kubectl-ate kubectl gcloud envsubst
+need kubectl gcloud envsubst
+ensure_kubeconfig
+ensure_kubectl_ate
 
 step "Revoke Auth Manager grant for ${ATESPACE}"
 gcloud agent-identity auth-providers revoke-authorization "${AUTH_PROVIDER##*/}" \

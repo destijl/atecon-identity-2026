@@ -34,6 +34,7 @@ DEMO_PROMPT="${GREEN}➜ ${CYAN}email-app ${COLOR_RESET}"
 DEMO_CMD_COLOR="${WHITE}"
 if $UNATTENDED; then NO_WAIT=true; unset TYPE_SPEED; fi
 
+ensure_kubeconfig
 PORT=18070
 PF_PID=""
 cleanup() { if [[ -n "${PF_PID}" ]]; then kill "${PF_PID}" 2>/dev/null || true; fi; }

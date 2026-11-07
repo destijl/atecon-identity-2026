@@ -15,26 +15,14 @@ source "${ROOT}/scripts/lib.sh"
 
 need gcloud kubectl podman envsubst go jq
 
-mkdir -p "${CACHE}"
-step "Cluster credentials -> ${KUBECONFIG}"
-gcloud container clusters get-credentials "${CLUSTER_NAME}" \
-  --location "${CLUSTER_LOCATION}" --project "${PROJECT_ID}" >/dev/null
+rm -f "${KUBECONFIG}"; ensure_kubeconfig
 CTX="$(kubectl config current-context)"
 
 step "Registry auth (short-lived token, private auth file)"
 mkdir -p "${DOCKER_CONFIG}"; chmod 700 "${DOCKER_CONFIG}"
 gcloud auth print-access-token | podman login -u oauth2accesstoken --password-stdin "${REGION}-docker.pkg.dev" >/dev/null
 
-step "Substrate source at ${SUBSTRATE_COMMIT}"
-if [[ -z "${SUBSTRATE_DIR:-}" ]]; then
-  SUBSTRATE_DIR="${CACHE}/substrate"
-  [[ -d "${SUBSTRATE_DIR}/.git" ]] || git clone -q "${SUBSTRATE_REPO:-https://github.com/agent-substrate/substrate}" "${SUBSTRATE_DIR}"
-  git -C "${SUBSTRATE_DIR}" -c advice.detachedHead=false checkout -q "${SUBSTRATE_COMMIT}" 2>/dev/null \
-    || { git -C "${SUBSTRATE_DIR}" fetch -q origin && git -C "${SUBSTRATE_DIR}" -c advice.detachedHead=false checkout -q "${SUBSTRATE_COMMIT}"; }
-fi
-[[ "$(git -C "${SUBSTRATE_DIR}" rev-parse HEAD)" == "${SUBSTRATE_COMMIT}"* ]] \
-  || die "${SUBSTRATE_DIR} is not at ${SUBSTRATE_COMMIT}"
-(cd "${SUBSTRATE_DIR}" && go build -o "${CACHE}/bin/kubectl-ate" ./cmd/kubectl-ate)
+FORCE=1 ensure_kubectl_ate
 
 if [[ "${SKIP_SUBSTRATE:-0}" != 1 ]]; then
   step "Substrate: ate-setup deploy ate-system"

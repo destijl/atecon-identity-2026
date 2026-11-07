@@ -2,6 +2,7 @@
 # shellcheck shell=bash
 
 CACHE="${ROOT}/.cache"
+mkdir -p "${CACHE}"
 export KUBECONFIG="${CACHE}/kubeconfig"
 export DOCKER_CONFIG="${CACHE}/docker"
 export REGISTRY_AUTH_FILE="${DOCKER_CONFIG}/config.json"
@@ -36,4 +37,30 @@ continue_url() {
   local u
   u="$(gcloud run services describe email-app-callback --region "${REGION}" --project "${PROJECT_ID}" --format='value(status.url)' 2>/dev/null)"
   [[ -n "${u}" ]] && echo "${u}/oauth/continue"
+}
+
+# ensure_kubeconfig writes cluster credentials to the private kubeconfig
+# (never ~/.kube/config) if it isn't there yet.
+ensure_kubeconfig() {
+  [[ -s "${KUBECONFIG}" ]] && return 0
+  step "Cluster credentials -> ${KUBECONFIG}"
+  gcloud container clusters get-credentials "${CLUSTER_NAME}" \
+    --location "${CLUSTER_LOCATION}" --project "${PROJECT_ID}" >/dev/null
+}
+
+# ensure_kubectl_ate builds kubectl-ate from Substrate at SUBSTRATE_COMMIT
+# into .cache/bin. FORCE=1 rebuilds even if it already exists.
+ensure_kubectl_ate() {
+  [[ "${FORCE:-0}" != 1 && -x "${CACHE}/bin/kubectl-ate" ]] && return 0
+  need git go
+  if [[ -z "${SUBSTRATE_DIR:-}" || ! -e "${SUBSTRATE_DIR}/.git" ]]; then
+    SUBSTRATE_DIR="${CACHE}/substrate"
+    [[ -e "${SUBSTRATE_DIR}/.git" ]] || git clone -q "${SUBSTRATE_REPO:-https://github.com/agent-substrate/substrate}" "${SUBSTRATE_DIR}"
+  fi
+  git -C "${SUBSTRATE_DIR}" -c advice.detachedHead=false checkout -q "${SUBSTRATE_COMMIT}" 2>/dev/null \
+    || { git -C "${SUBSTRATE_DIR}" fetch -q origin && git -C "${SUBSTRATE_DIR}" -c advice.detachedHead=false checkout -q "${SUBSTRATE_COMMIT}"; }
+  [[ "$(git -C "${SUBSTRATE_DIR}" rev-parse HEAD)" == "${SUBSTRATE_COMMIT}"* ]] \
+    || die "${SUBSTRATE_DIR} is not at ${SUBSTRATE_COMMIT}"
+  step "Build kubectl-ate (${SUBSTRATE_COMMIT})"
+  (cd "${SUBSTRATE_DIR}" && go build -o "${CACHE}/bin/kubectl-ate" ./cmd/kubectl-ate)
 }
