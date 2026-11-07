@@ -25,7 +25,7 @@ func TestHandler(t *testing.T) {
 		{method: "GET", path: "/oauth/continue?user_id_validation_state=S&uuid=U", want: 200, forwarded: true},
 		{method: "POST", path: "/oauth/continue", want: 405},
 		{method: "GET", path: "/consent", want: 404},
-		{method: "GET", path: "/agent/list", want: 404},
+		{method: "GET", path: "/agent/search", want: 404},
 		{method: "GET", path: "/readyz", want: 200},
 	}
 	for _, tt := range tests {

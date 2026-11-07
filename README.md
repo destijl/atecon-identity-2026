@@ -19,10 +19,10 @@ without putting a token in the sandbox.
 | # | On screen | What it shows |
 |---|---|---|
 | 1 | `agent audit` | The sandbox has no secret env vars, no credential files and no metadata server: `zeroAmbientVerified: true`. |
-| 2 | `agent list` | Gmail call is refused by Substrate's egress gateway (403): Alice hasn't granted access yet. |
+| 2 | `agent search` | Gmail call is refused by Substrate's egress gateway (403): Alice hasn't granted access yet. |
 | 2b | `agent consent` | The app hands the agent a consent link. It knows which agent is asking from an actor JWT the gateway injected. |
 | 3 | browser | Alice consents to "View your email messages and settings" (`gmail.readonly`). |
-| 4 | `agent list`, `agent audit` | Same call now returns 200 with 5 messages (subjects redacted). The sandbox still holds no token. |
+| 4 | `agent search`, `agent audit` | Same call now returns 200 with up to 3 subjects matching `Agent Substrate Day:`. The sandbox still holds no token. |
 | 5 | `agent trash` | Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`: the token can't delete mail. |
 | 6 | logs | The egress gateway logs the call under the agent's SPIFFE ID; the credential provider logs which actor got which user's token. |
 

@@ -41,7 +41,22 @@ trap cleanup EXIT
 if ! curl -fsS -o /dev/null -m 2 "localhost:${PORT}/readyz" 2>/dev/null; then
   kubectl -n email-app port-forward deploy/email-app "${PORT}:8070" >"${CACHE}/pf-email-app.log" 2>&1 &
   PF_PID=$!
-  for _ in $(seq 30); do curl -fsS -o /dev/null -m 2 "localhost:${PORT}/readyz" 2>/dev/null && break; sleep 1; done
+  ready=false
+  for _ in $(seq 30); do
+    if curl -fsS -o /dev/null -m 2 "localhost:${PORT}/readyz" 2>/dev/null; then
+      ready=true
+      break
+    fi
+    sleep 1
+  done
+  if ! $ready; then
+    echo "ERROR: email-app failed to become ready on localhost:${PORT}." >&2
+    if [[ -f "${CACHE}/pf-email-app.log" ]]; then
+      echo "--- port-forward log (${CACHE}/pf-email-app.log) ---" >&2
+      cat "${CACHE}/pf-email-app.log" >&2
+    fi
+    exit 1
+  fi
 fi
 START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -50,7 +65,7 @@ agent() {
   local method=GET; [[ "$1" == trash ]] && method=POST
   curl -sS -m 60 -X "${method}" "localhost:${PORT}/agent/$1" | sed "s/${DEMO_EMAIL}/${DISPLAY_EMAIL}/g" | jq -C .
 }
-banner() { echo; printf '%s\n' "${BOLD}${YELLOW}# $*${COLOR_RESET}"; }
+banner() { echo; printf '%b\n' "${BOLD}${YELLOW}# $*${COLOR_RESET}"; }
 pause() { $UNATTENDED || wait; }
 
 clear
@@ -58,8 +73,8 @@ banner "Alice's email agent runs in a Substrate sandbox (atespace ${ATESPACE})."
 banner "1. What credentials does the agent hold?"
 pe "agent audit"
 
-banner "2. Ask Gmail for Alice's 5 latest messages"
-pe "agent list"
+banner "2. Search Alice's Gmail for subject \"Agent Substrate Day:\""
+pe "agent search"
 banner "   403 from Substrate's egress gateway: no grant for Alice yet. Ask the app for a consent link."
 p "agent consent"
 CONSENT="$(curl -sS -m 60 "localhost:${PORT}/agent/consent")"
@@ -81,7 +96,7 @@ echo " ✓"
 pause
 
 banner "4. Same call, same sandbox"
-pe "agent list"
+pe "agent search"
 banner "   ...and the sandbox still holds no token"
 pe "agent audit"
 

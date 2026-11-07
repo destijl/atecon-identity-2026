@@ -24,7 +24,7 @@ func TestDriverForwards(t *testing.T) {
 		wantFwd      string
 	}{
 		{method: "GET", path: "/agent/audit", want: 200, wantFwd: "/audit"},
-		{method: "GET", path: "/agent/list", want: 200, wantFwd: "/list"},
+		{method: "GET", path: "/agent/search", want: 200, wantFwd: "/search"},
 		{method: "POST", path: "/agent/trash", want: 200, wantFwd: "/trash"},
 		{method: "GET", path: "/agent/trash", want: 405},
 		{method: "GET", path: "/agent/readyz", want: 404},

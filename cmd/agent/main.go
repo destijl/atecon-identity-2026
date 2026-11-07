@@ -2,7 +2,7 @@
 // holds no credentials. It exposes a small HTTP API the demo drives:
 //
 //	GET  /audit    look for ambient credentials in this sandbox
-//	GET  /list     list 5 recent messages (subjects redacted)
+//	GET  /search   subjects of up to 3 messages matching the demo subject prefix
 //	POST /trash    try to trash a message (a nonexistent one)
 //	GET  /consent  ask the email app for a consent link for this agent's user
 package main
@@ -24,6 +24,7 @@ import (
 func main() {
 	addr := flag.String("address", ":80", "listen address")
 	gmailURL := flag.String("gmail-url", gmail.DefaultBaseURL, "Gmail API base")
+	subjectPrefix := flag.String("subject-prefix", "Agent Substrate Day:", "only subjects containing this are searched for and shown")
 	appURL := flag.String("email-app-url", "http://email-app.email-app.svc.cluster.local:8080", "email app internal URL")
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -35,8 +36,8 @@ func main() {
 	mux.HandleFunc("GET /audit", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, audit.New().Run(r.Context()))
 	})
-	mux.HandleFunc("GET /list", func(w http.ResponseWriter, r *http.Request) {
-		res, err := g.List(r.Context(), 5)
+	mux.HandleFunc("GET /search", func(w http.ResponseWriter, r *http.Request) {
+		res, err := g.Search(r.Context(), *subjectPrefix, 3)
 		reply(w, res, err)
 	})
 	mux.HandleFunc("POST /trash", func(w http.ResponseWriter, r *http.Request) {

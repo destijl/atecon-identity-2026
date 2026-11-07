@@ -12,7 +12,7 @@ import (
 )
 
 // AgentOps are the agent endpoints the driver forwards, with their methods.
-var AgentOps = map[string]string{"audit": http.MethodGet, "list": http.MethodGet, "consent": http.MethodGet, "trash": http.MethodPost}
+var AgentOps = map[string]string{"audit": http.MethodGet, "search": http.MethodGet, "consent": http.MethodGet, "trash": http.MethodPost}
 
 // Driver lets the operator drive the user's agent through the app. The app
 // reaches its agent the way any Substrate client does: through the ingress

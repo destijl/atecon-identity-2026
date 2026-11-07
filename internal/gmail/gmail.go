@@ -1,7 +1,7 @@
 // Package gmail is the agent's tiny Gmail REST client. It holds no
 // credential: it sends a placeholder Authorization header, which the
 // Substrate egress gateway replaces with the user's OAuth token on the way
-// out. Message content is never returned; subjects are redacted to lengths.
+// out. It only ever returns subjects that match a fixed search prefix.
 package gmail
 
 import (
@@ -27,19 +27,14 @@ type Client struct {
 	HTTP    *http.Client
 }
 
-// Message is one redacted message.
-type Message struct {
-	ID      string `json:"id"`
-	Subject string `json:"subject"`
-}
-
 // Result is what a call returned, safe to print.
 type Result struct {
-	Status   int       `json:"status"`
-	From     string    `json:"answeredBy"`
-	Messages []Message `json:"messages,omitempty"`
-	Error    string    `json:"error,omitempty"`
-	Reason   string    `json:"reason,omitempty"`
+	Status   int      `json:"status"`
+	From     string   `json:"answeredBy"`
+	Query    string   `json:"query,omitempty"`
+	Subjects []string `json:"subjects,omitempty"`
+	Error    string   `json:"error,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
 }
 
 func (c *Client) base() string {
@@ -49,39 +44,55 @@ func (c *Client) base() string {
 	return DefaultBaseURL
 }
 
-// List returns up to n message IDs with redacted subjects.
-func (c *Client) List(ctx context.Context, n int) (*Result, error) {
+// scanLimit caps how many search hits Search inspects. Gmail's subject:
+// operator matches words loosely, so some hits may lack the exact prefix.
+const scanLimit = 20
+
+// Search returns the subjects of up to n messages whose subject contains
+// prefix (case-insensitive). It asks Gmail for subject:"<prefix>" and then
+// drops any hit whose subject doesn't literally contain prefix, so a loose
+// match can never put an unrelated subject on screen.
+func (c *Client) Search(ctx context.Context, prefix string, n int) (*Result, error) {
+	query := fmt.Sprintf("subject:%q", prefix)
 	var list struct {
 		Messages []struct {
 			ID string `json:"id"`
 		} `json:"messages"`
 	}
-	res, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/messages?maxResults=%d", n), &list)
-	if err != nil || res.Status != http.StatusOK {
-		return res, err
+	q := url.Values{"q": {query}, "maxResults": {fmt.Sprint(scanLimit)}}
+	res, err := c.do(ctx, http.MethodGet, "/messages?"+q.Encode(), &list)
+	if err != nil {
+		return nil, err
 	}
-	res.Messages = []Message{}
+	res.Query = query
+	if res.Status != http.StatusOK {
+		return res, nil
+	}
+	res.Subjects = []string{}
+	want := strings.ToLower(prefix)
 	for _, m := range list.Messages {
+		if len(res.Subjects) == n {
+			break
+		}
 		var meta struct {
 			Payload struct {
 				Headers []struct{ Name, Value string } `json:"headers"`
 			} `json:"payload"`
 		}
-		q := url.Values{"format": {"metadata"}, "metadataHeaders": {"Subject"}}
-		r, err := c.do(ctx, http.MethodGet, "/messages/"+url.PathEscape(m.ID)+"?"+q.Encode(), &meta)
+		mq := url.Values{"format": {"metadata"}, "metadataHeaders": {"Subject"}}
+		r, err := c.do(ctx, http.MethodGet, "/messages/"+url.PathEscape(m.ID)+"?"+mq.Encode(), &meta)
 		if err != nil {
 			return nil, err
 		}
-		subj := "(unavailable)"
-		if r.Status == http.StatusOK {
-			subj = Redact("")
-			for _, h := range meta.Payload.Headers {
-				if strings.EqualFold(h.Name, "Subject") {
-					subj = Redact(h.Value)
-				}
+		if r.Status != http.StatusOK {
+			continue
+		}
+		for _, h := range meta.Payload.Headers {
+			if strings.EqualFold(h.Name, "Subject") && strings.Contains(strings.ToLower(h.Value), want) {
+				res.Subjects = append(res.Subjects, h.Value)
+				break
 			}
 		}
-		res.Messages = append(res.Messages, Message{ID: RedactID(m.ID), Subject: subj})
 	}
 	return res, nil
 }
@@ -154,17 +165,4 @@ func answeredBy(resp *http.Response, body []byte) string {
 		return "substrate-egress-gateway"
 	}
 	return "google"
-}
-
-// Redact hides a subject, keeping only its length.
-func Redact(s string) string {
-	return fmt.Sprintf("[redacted, %d chars]", len([]rune(s)))
-}
-
-// RedactID keeps the first 4 characters of a message ID.
-func RedactID(id string) string {
-	if len(id) <= 4 {
-		return id
-	}
-	return id[:4] + "…"
 }
