@@ -1,0 +1,155 @@
+# The email app: the "application", on plain Kubernetes outside Substrate.
+#   - Service email-app (ClusterIP :8080, /consent): only the Substrate egress
+#     gateway may connect, so only actors (with an injected actor JWT) reach it.
+#   - Service email-app-callback (INTERNAL LoadBalancer :80 -> :8090,
+#     /oauth/continue): VPC-only. The browser reaches it through the
+#     callback-proxy Cloud Run service, which terminates TLS with a
+#     Google-managed cert (https://email-app-callback-<n>.<region>.run.app).
+#   - Port 8070 (/agent/{op}): the operator drives the user's agent. No Service
+#     and no NetworkPolicy ingress rule; reachable only by kubectl port-forward.
+#     The app calls its agent through the Substrate ingress router with its pod
+#     identity.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: email-app
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: email-app
+  namespace: email-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: email-app
+  namespace: email-app
+  labels:
+    app: email-app
+spec:
+  replicas: 1 # consent state is in memory
+  selector:
+    matchLabels:
+      app: email-app
+  template:
+    metadata:
+      labels:
+        app: email-app
+    spec:
+      serviceAccountName: email-app
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: email-app
+        image: ${EMAIL_APP_IMAGE}
+        args:
+        - --internal-address=:8080
+        - --public-address=:8090
+        - --auth-provider=${AUTH_PROVIDER}
+        - --continue-url=${CONTINUE_URL}
+        - --users=${DISPLAY_EMAIL}=${DEMO_EMAIL}
+        - --actor-jwt-audience=email-app
+        - --drive-actor=${ATESPACE}/email-agent
+        ports:
+        - name: internal
+          containerPort: 8080
+        - name: public
+          containerPort: 8090
+        - name: driver
+          containerPort: 8070
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: internal
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: servicedns-ca
+          mountPath: /run/servicedns-ca
+          readOnly: true
+        # The app's own pod identity (spiffe://cluster.local/ns/email-app/sa/email-app),
+        # presented to the Substrate ingress router to reach its agent.
+        - name: podidentity
+          mountPath: /run/podidentity.podcert.ate.dev
+          readOnly: true
+      volumes:
+      - name: podidentity
+        projected:
+          sources:
+          - podCertificate:
+              signerName: podidentity.podcert.ate.dev/identity
+              keyType: ECDSAP256
+              credentialBundlePath: credential-bundle.pem
+      - name: servicedns-ca
+        projected:
+          sources:
+          - clusterTrustBundle:
+              signerName: servicedns.podcert.ate.dev/identity
+              labelSelector:
+                matchLabels:
+                  podcert.ate.dev/canarying: live
+              path: trust-bundle.pem
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: email-app
+  namespace: email-app
+spec:
+  selector:
+    app: email-app
+  ports:
+  - name: internal
+    port: 8080
+    targetPort: internal
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: email-app-callback
+  namespace: email-app
+  annotations:
+    networking.gke.io/load-balancer-type: Internal
+spec:
+  type: LoadBalancer
+  selector:
+    app: email-app
+  ports:
+  - name: public
+    port: 80
+    targetPort: public
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: email-app
+  namespace: email-app
+spec:
+  podSelector:
+    matchLabels:
+      app: email-app
+  policyTypes: [Ingress]
+  ingress:
+  # Actors, via the Substrate egress gateway only.
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ate-system
+      podSelector:
+        matchLabels:
+          app: atenet-egress
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Browsers, via Cloud Run callback-proxy -> internal load balancer.
+  - ports:
+    - protocol: TCP
+      port: 8090

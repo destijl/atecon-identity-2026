@@ -1,0 +1,14 @@
+# Builds one of the demo binaries into a distroless image at /app.
+#   podman build -f deploy/Containerfile --build-arg CMD=agent .
+FROM mirror.gcr.io/library/golang:1.27 AS build
+ARG CMD
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags=-s -o /out/app ./cmd/${CMD}
+
+FROM gcr.io/distroless/static-debian13:nonroot
+COPY --from=build /out/app /app
+USER 65532:65532
+ENTRYPOINT ["/app"]

@@ -1,0 +1,115 @@
+# Auth Manager credential provider: the only Substrate-side component.
+# The egress gateway dials it over mTLS (server cert from the servicedns
+# signer, client cert from the podidentity signer) and it only accepts the
+# gateway's SPIFFE ID. It reaches Auth Manager as its own Kubernetes service
+# account through Workload Identity (no Google service account, no key).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: authmanager-provider
+  namespace: ate-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authmanager-provider
+  namespace: ate-system
+  labels:
+    app: authmanager-provider
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: authmanager-provider
+  template:
+    metadata:
+      labels:
+        app: authmanager-provider
+    spec:
+      serviceAccountName: authmanager-provider
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: provider
+        image: ${PROVIDER_IMAGE}
+        args:
+        - --listen-address=:50051
+        - --health-address=:9091
+        - --provider-name=authmanager.demo
+        - --scopes=gmail.readonly
+        - --auth-provider=${AUTH_PROVIDER}
+        - --allowed-clients=spiffe://cluster.local/ns/ate-system/sa/atenet-egress
+        ports:
+        - name: grpc
+          containerPort: 50051
+        - name: health
+          containerPort: 9091
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: servicedns
+          mountPath: /run/servicedns.podcert.ate.dev
+          readOnly: true
+        - name: podidentity
+          mountPath: /run/podidentity.podcert.ate.dev
+          readOnly: true
+      volumes:
+      - name: servicedns
+        projected:
+          sources:
+          - podCertificate:
+              signerName: servicedns.podcert.ate.dev/identity
+              keyType: ECDSAP256
+              credentialBundlePath: credential-bundle.pem
+      - name: podidentity
+        projected:
+          sources:
+          - clusterTrustBundle:
+              signerName: podidentity.podcert.ate.dev/identity
+              labelSelector:
+                matchLabels:
+                  podcert.ate.dev/canarying: live
+              path: trust-bundle.pem
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authmanager-provider
+  namespace: ate-system
+spec:
+  selector:
+    app: authmanager-provider
+  ports:
+  - name: grpc
+    port: 50051
+    targetPort: grpc
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: authmanager-provider
+  namespace: ate-system
+spec:
+  podSelector:
+    matchLabels:
+      app: authmanager-provider
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: atenet-egress
+    ports:
+    - protocol: TCP
+      port: 50051

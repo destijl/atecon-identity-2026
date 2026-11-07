@@ -1,0 +1,27 @@
+# Worker pool for the email agent. Applied with ko resolve (by ate-setup's
+# KO_DOCKER_REPO) so the worker image matches the installed Substrate build.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: email-agent-workers
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: email-agent
+  namespace: email-agent-workers
+  labels:
+    workload: email-agent
+spec:
+  replicas: 2
+  workerImage: ${WORKER_IMAGE}
+  sandboxClasses:
+  - name: gvisor
+  template:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 1Gi
