@@ -110,7 +110,7 @@ func TestContinueFinalizesOnce(t *testing.T) {
 	cb := "/oauth/continue?user_id_validation_state=STATE&uuid=uid1&auth_provider_name=x"
 	rec := httptest.NewRecorder()
 	app.PublicHandler().ServeHTTP(rec, httptest.NewRequest("GET", cb, nil))
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Access granted") || !strings.Contains(rec.Body.String(), "alice@gmail.com") {
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Access granted") || !strings.Contains(rec.Body.String(), "Your email agent is ready") {
 		t.Fatalf("continue = %d %s", rec.Code, rec.Body)
 	}
 	if len(am.finalized) != 1 || am.finalized[0] != "u-alice|STATE|nonce1" {

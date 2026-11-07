@@ -131,8 +131,6 @@ p "kubectl ate get egress-policy ${ACTOR} -a ${ATESPACE} -o yaml"
 kubectl ate get egress-policy "${ACTOR}" -a "${ATESPACE}" -o yaml 2>/dev/null \
   | awk '/^metadata:/{skip=1; next} /^[^ ]/{skip=0} !skip'
 echo
-note "One rule: for gmail.googleapis.com the gateway swaps in Alice's OAuth token from a credential provider."
-note "The URI names only the scope; the provider takes the user from the actor's atespace. Anything else: denied."
 
 section "REQUEST  5. The agent searches Alice's Gmail for subject \"Agent Substrate Day:\""
 pe "agent search"

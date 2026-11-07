@@ -51,9 +51,33 @@ ensure_kubeconfig() {
 }
 
 # ensure_kubectl_ate builds kubectl-ate from Substrate at SUBSTRATE_COMMIT
-# into .cache/bin. FORCE=1 rebuilds even if it already exists.
+# into .cache/bin. A wrapper passes a minted ate-client token to silence the
+# fallback warning on-screen while keeping typed commands clean.
 ensure_kubectl_ate() {
-  [[ "${FORCE:-0}" != 1 && -x "${CACHE}/bin/kubectl-ate" ]] && return 0
+  if [[ -f "${CACHE}/bin/kubectl-ate" && ! -f "${CACHE}/bin/kubectl-ate.bin" ]]; then
+    # Migrate any existing binary to .bin so the wrapper takes its place.
+    mv "${CACHE}/bin/kubectl-ate" "${CACHE}/bin/kubectl-ate.bin"
+  fi
+  write_kubectl_ate_wrapper() {
+    cat > "${CACHE}/bin/kubectl-ate" <<'EOF'
+#!/usr/bin/env bash
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="${DIR}/kubectl-ate.bin"
+TOKEN_FILE="${DIR}/../ate-client.token"
+if [[ ! -s "${TOKEN_FILE}" ]] && command -v kubectl >/dev/null 2>&1; then
+  kubectl create token -n ate-system ate-client --audience api.ate-system.svc --duration=24h > "${TOKEN_FILE}" 2>/dev/null || true
+fi
+if [[ -s "${TOKEN_FILE}" ]] && ! [[ " $* " =~ [[:space:]]--token-file[[:space:]=] ]]; then
+  exec "${BIN}" --token-file "${TOKEN_FILE}" "$@"
+fi
+exec "${BIN}" "$@"
+EOF
+    chmod +x "${CACHE}/bin/kubectl-ate"
+  }
+  if [[ "${FORCE:-0}" != 1 && -x "${CACHE}/bin/kubectl-ate.bin" ]]; then
+    [[ -x "${CACHE}/bin/kubectl-ate" ]] || write_kubectl_ate_wrapper
+    return 0
+  fi
   need git go
   if [[ -z "${SUBSTRATE_DIR:-}" || ! -e "${SUBSTRATE_DIR}/.git" ]]; then
     SUBSTRATE_DIR="${CACHE}/substrate"
@@ -64,7 +88,8 @@ ensure_kubectl_ate() {
   [[ "$(git -C "${SUBSTRATE_DIR}" rev-parse HEAD)" == "${SUBSTRATE_COMMIT}"* ]] \
     || die "${SUBSTRATE_DIR} is not at ${SUBSTRATE_COMMIT}"
   step "Build kubectl-ate (${SUBSTRATE_COMMIT})"
-  (cd "${SUBSTRATE_DIR}" && go build -o "${CACHE}/bin/kubectl-ate" ./cmd/kubectl-ate)
+  (cd "${SUBSTRATE_DIR}" && go build -o "${CACHE}/bin/kubectl-ate.bin" ./cmd/kubectl-ate)
+  write_kubectl_ate_wrapper
 }
 
 # log_all_egress makes Substrate's egress gateway log every actor request.

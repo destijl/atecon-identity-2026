@@ -188,7 +188,7 @@ var donePage = template.Must(template.New("done").Parse(`<!doctype html>
 <style>body{font-family:system-ui,sans-serif;max-width:40em;margin:4em auto;color:#202124}
 .ok{color:#188038}.err{color:#c5221f}code{background:#f1f3f4;padding:.1em .3em}</style></head>
 <body>{{if .OK}}<h1 class="ok">✓ Access granted</h1>
-<p>Your email agent is ready and can <b>read</b> mail for <code>{{.Email}}</code>.</p>
+<p>Your email agent is ready and can <b>read</b> mail.</p>
 <p>The agent never sees the token: Substrate's egress gateway adds it to the agent's requests to Gmail.</p>
 <p>You can close this tab.</p>
 {{else}}<h1 class="err">Consent not completed</h1><p>{{.Msg}}</p>{{end}}
