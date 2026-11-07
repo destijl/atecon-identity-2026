@@ -68,7 +68,15 @@ START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # asks Alice's agent to do something, through the app.
 email-app() {
   [[ "$1" == signup ]] || return 1
-  curl -sS -m 60 -X POST "localhost:${PORT}/signup?email=$2" | sed "s/${DEMO_EMAIL}/${DISPLAY_EMAIL}/g"
+  local res url
+  res="$(curl -sS -m 60 -X POST "localhost:${PORT}/signup?email=$2")"
+  url="$(jq -r '.authorizationUrl // empty' <<<"${res}")"
+  if [[ -n "${url}" ]]; then
+    printf '%s\n' "${url}" > "${CACHE}/consent-url.txt"
+    printf '%s\n' "${url}"
+  else
+    printf '%s\n' "${res}"
+  fi
 }
 agent() {
   local method=GET; [[ "$1" == trash ]] && method=POST
@@ -101,18 +109,8 @@ note "allowedScopes: the most this client can ever be granted (read-only Gmail)"
 note "redirectUrl: Google returns the code to Auth Manager, which stores the tokens"
 note "continueUri: Auth Manager then sends Alice's browser back to the email app"
 
-section "SIGN-UP  2. Alice signs up at the email app; it asks Auth Manager for her consent link"
-p "email-app signup ${DISPLAY_EMAIL}"
-SIGNUP="$(email-app signup "${DISPLAY_EMAIL}")"
-jq -C '.authorizationUrl |= (if . then (.[0:60] + "…") else . end)' <<<"${SIGNUP}"
-URL="$(jq -r '.authorizationUrl // empty' <<<"${SIGNUP}")"
-[[ -n "${URL}" ]] && printf '%s\n' "${URL}" > "${CACHE}/consent-url.txt"
-echo
-note "No agent exists yet. Auth Manager keys Alice's grant by her atespace name, ${ATESPACE}."
-
-section "SIGN-UP  3. Alice opens the link and grants read-only access (gmail.readonly)"
-echo
-printf '%s\n' "${URL:-no consent link, see the response above}"
+section "SIGN-UP  2. Alice signs up at the email app to grant read-only access (gmail.readonly)"
+pe "email-app signup ${DISPLAY_EMAIL}"
 echo
 printf '%s' "   waiting for consent and for the app to create Alice's agent "
 # Watch the app's log; signing up again would start a new consent attempt.
@@ -125,22 +123,22 @@ until kubectl -n email-app logs deploy/email-app --since-time="${START}" 2>/dev/
 done
 echo " ✓"
 
-section "SIGN-UP  4. The app created Alice's atespace, agent and egress policy through the Substrate API"
+section "SIGN-UP  3. The app created Alice's atespace, agent and egress policy through the Substrate API"
 pe "kubectl ate get actors -a ${ATESPACE}"
 p "kubectl ate get egress-policy ${ACTOR} -a ${ATESPACE} -o yaml"
 kubectl ate get egress-policy "${ACTOR}" -a "${ATESPACE}" -o yaml 2>/dev/null \
   | awk '/^metadata:/{skip=1; next} /^[^ ]/{skip=0} !skip'
 echo
 
-section "REQUEST  5. The agent searches Alice's Gmail for subject \"Agent Substrate Day:\""
+section "REQUEST  4. The agent searches Alice's Gmail for subject \"Agent Substrate Day:\""
 pe "agent search"
 note "The agent sent a placeholder header; the gateway added the token on the way out."
 
-section "REQUEST  6. The agent tries to trash a message"
+section "REQUEST  5. The agent tries to trash a message"
 pe "agent trash"
 note "Google refuses: the token is scoped to gmail.readonly"
 
-section "REQUEST  7. What the logs say"
+section "REQUEST  6. What the logs say"
 p "kubectl logs -n ate-system deploy/atenet-egress -c envoy | grep gmail"
 # One line per Gmail call the agent made; the per-message metadata reads
 # are left out to keep it short (and keep message IDs off screen).

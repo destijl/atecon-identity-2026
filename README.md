@@ -22,12 +22,11 @@ agent exists, then her agent makes requests.
 | # | On screen | What it shows |
 |---|---|---|
 | 1 | `gcloud agent-identity auth-providers describe` | The app's OAuth client in Auth Manager: allowed scope `gmail.readonly`, Auth Manager's redirect URL (it receives and stores the tokens), and the email app's continue URI. |
-| 2 | `email-app signup alice@gmail.com` | Alice signs up. The app asks Auth Manager for a consent link for her atespace, `u-alice`. No agent exists yet. |
-| 3 | browser | Alice consents to "View your email messages and settings" (`gmail.readonly`). The link carries `prompt=consent`, so Google shows the screen on every take. The domain on the screen is Auth Manager's, which holds the tokens. |
-| 4 | `kubectl ate get actors`, `kubectl ate get egress-policy` | The app has created atespace `u-alice`, the actor `mail-agent` and its one-rule egress policy through the Substrate API. |
-| 5 | `agent search` | 200 with up to 3 subjects matching `Agent Substrate Day:`. The agent never holds the token. |
-| 6 | `agent trash` | Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`: the token can't delete mail. |
-| 7 | logs | The egress gateway logs each Gmail call (200, 403) under the agent's SPIFFE ID; the credential provider logs which actor got which user's token. |
+| 2 | `email-app signup alice@gmail.com` | Alice signs up at the app, prints the copy-paste consent link (`gmail.readonly`), and waits for browser consent and agent creation. |
+| 3 | `kubectl ate get actors`, `kubectl ate get egress-policy` | The app has created atespace `u-alice`, the actor `mail-agent` and its one-rule egress policy through the Substrate API. |
+| 4 | `agent search` | 200 with up to 3 subjects matching `Agent Substrate Day:`. The agent never holds the token. |
+| 5 | `agent trash` | Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`: the token can't delete mail. |
+| 6 | logs | The egress gateway logs each Gmail call (200, 403) under the agent's SPIFFE ID; the credential provider logs which actor got which user's token. |
 
 ## How it works
 
