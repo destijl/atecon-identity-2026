@@ -1,155 +1,152 @@
 # Pleading the Agent: OAuth without a token in the sandbox
 
-Demo for the talk *Pleading the Agent: proof of agent identity* (Agent
-Substrate Day, Nov 2026). It shows the "scoped secret" rung of the talk's
-attribution ladder.
+Demo for the talk *Pleading the Agent: proof of agent identity* (Agent Substrate Day, Nov 2026). It demonstrates the "scoped secret" rung of the talk's attribution ladder.
 
-An AI agent runs in an [Agent Substrate](https://github.com/agent-substrate/substrate)
-sandbox with **zero credentials**. It reads a user's Gmail through an OAuth
-token that Google Cloud Agent Auth Manager holds and that Substrate's egress
-gateway adds to the agent's requests on the way out. The agent never sees the
-token, the token is scoped to `gmail.readonly`, and every call is logged under
-the agent's own identity.
+An AI agent runs inside an [Agent Substrate](https://github.com/agent-substrate/substrate) gVisor sandbox with **zero ambient credentials**. It reads a user's Gmail using an OAuth token stored and managed by Google Cloud Agent Auth Manager. Substrate's egress gateway transparently injects the token into outgoing requests based on the actor's verified SPIFFE identity. The sandbox never holds a token, the token is strictly bounded to `gmail.readonly`, and all API calls are logged under the agent's cryptographic identity.
 
-OAuth is what most APIs (every Google API) offer today. This is how you use it
-without putting a token in the sandbox.
+OAuth is what most production APIs (including all Google APIs) support today. This demo shows how to integrate OAuth into sandboxed AI agents without handing credentials to untrusted model code.
 
-## What you'll see
-
-Two parts, matching the talk's slides: Alice signs up (and consents) before any
-agent exists, then her agent makes requests.
-
-| # | On screen | What it shows |
-|---|---|---|
-| 1 | `gcloud agent-identity auth-providers describe` | The app's OAuth client in Auth Manager: allowed scope `gmail.readonly`, Auth Manager's redirect URL (it receives and stores the tokens), and the email app's continue URI. |
-| 2 | `email-app signup alice@gmail.com` | Alice signs up at the app, prints the copy-paste consent link (`gmail.readonly`), and waits for browser consent and agent creation. |
-| 3 | `kubectl ate get actors`, `kubectl ate get egress-policy` | The app has created atespace `u-alice`, the actor `mail-agent` and its one-rule egress policy through the Substrate API. |
-| 4 | `agent search` | 200 with up to 3 subjects matching `Agent Substrate Day:`. The agent never holds the token. |
-| 5 | `agent trash` | Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`: the token can't delete mail. |
-| 6 | logs | The egress gateway logs each Gmail call (200, 403) under the agent's SPIFFE ID; the credential provider logs which actor got which user's token. |
-
-## How it works
+## Architecture
 
 ```mermaid
-flowchart LR
-  subgraph app["Email app (GKE, outside Substrate)"]
-    ea["email-app<br/>sign-up, finalize, create agent"]
+flowchart TD
+  subgraph Phase1["1. Sign-Up & Consent Flow (Creates the Agent)"]
+    direction TB
+    user1["Alice's Browser"]
+    app1["Email App<br/>(GKE, outside Substrate)"]
+    am1["Agent Auth Manager<br/>(GCP Managed Broker)"]
+    google["Google Accounts<br/>(accounts.google.com)"]
+    cr["Callback Proxy<br/>(Cloud Run HTTPS Front Door)"]
+    api["Substrate Control Plane<br/>(ate-api-server)"]
+
+    app1 -->|"1. credentials:retrieve(u-alice, gmail.readonly)"| am1
+    app1 -->|"2. Presents consent link"| user1
+    user1 -->|"3. Consents to gmail.readonly"| google
+    google -->|"4. OAuth redirect with code"| am1
+    am1 -->|"5. 302 redirect to continueUri"| cr
+    cr -->|"6. Proxy /oauth/continue"| app1
+    app1 -->|"7. credentials:finalize"| am1
+    app1 -->|"8. Create atespace u-alice, actor, egress policy"| api
   end
-  cr["callback-proxy<br/>(Cloud Run, HTTPS)"]
-  subgraph sub["Agent Substrate"]
-    api["ate-api"]
-    agent["mail-agent<br/>(actor in u-alice, zero creds)"]
-    gw["egress gateway"]
-    prov["authmanager-provider<br/>(credential provider)"]
+
+  subgraph Phase2["2. Request Flow (Zero-Credential Agent Reads Gmail)"]
+    direction TB
+    agent["Mail Agent<br/>(gVisor sandbox in u-alice, 0 creds)"]
+    gw["Substrate Egress Gateway<br/>(atenet-egress Envoy)"]
+    prov["Auth Manager Provider<br/>(Credential Plugin in ate-system)"]
+    am2["Agent Auth Manager"]
+    gmail["Gmail API<br/>(gmail.googleapis.com)"]
+
+    agent -->|"1. GET /messages (placeholder header)"| gw
+    gw -->|"2. FetchSecret(uri, actor SPIFFE ID)"| prov
+    prov -->|"3. credentials:retrieve for u-alice"| am2
+    am2 -.->|"OAuth Access Token"| prov
+    prov -.->|"Token returned over mTLS"| gw
+    gw -->|"4. Injects Authorization: Bearer token"| gmail
+    gmail -.->|"200 OK (search) / 403 Denied (trash)"| agent
   end
-  am["Agent Auth Manager"]
-  gmail["gmail.googleapis.com"]
-  user["Alice's browser"]
-
-  ea -->|"1 credentials:retrieve"| am
-  user -->|"2 consent"| am
-  am -->|"3 redirect"| cr --> ea
-  ea -->|"credentials:finalize"| am
-  ea -->|"4 create atespace, actor, egress policy"| api
-  agent -->|"Authorization: placeholder"| gw
-  gw -->|"FetchSecret(uri, actor SPIFFE ID)"| prov
-  prov -->|"credentials:retrieve"| am
-  gw -->|"Authorization: Bearer token"| gmail
 ```
 
-- **`cmd/email-app`** is the application, on plain Kubernetes:
-  - At sign-up it asks Auth Manager for a consent link for the user's atespace (`alice@gmail.com` → `u-alice`).
-  - When the browser returns, it finalizes the grant and then creates the user's atespace, actor and egress policy through the Substrate API. It authenticates with a projected ServiceAccount token and is a Substrate global owner (`deploy/global-access-policy.yaml`), because creating atespaces requires that role and a multi-tenant app creates one per user.
-  - It lets the operator drive the agent through Substrate's ingress router.
-- **`cmd/agent`** runs in the actor. It sends a placeholder `Authorization`
-  header; the gateway replaces it.
-- **`cmd/authmanager-provider`** implements Substrate's credential provider
-  plugin API (`FetchSecret`). The user is the actor's atespace, taken from the
-  SPIFFE ID the gateway verified, so an agent can only ever get its own user's
-  token. URIs name only the scope:
-  `ate-secret://authmanager.demo/gmail-oauth/gmail.readonly`.
-- **`cmd/callback-proxy`** is the app's HTTPS front door on Cloud Run, so the
-  browser lands on a page with a valid certificate. It forwards only
-  `/oauth/continue` to the app over the VPC.
-- **The agent's template and egress policy** are in the `email-app-agent`
-  ConfigMap in `deploy/email-app.yaml`. The policy has one rule: Gmail, with
-  the OAuth token injected. Nothing else is reachable.
+## How It Works
 
-## Setup
+### Phase 1: User Sign-Up & Agent Creation
+1. **User Sign-Up:** Alice registers with the email app (`POST /signup?email=alice@gmail.com`). No agent exists yet.
+2. **Consent Link Generation:** The email app calls Auth Manager's `credentials:retrieve` API for user `u-alice` and scope `gmail.readonly`. Auth Manager returns a Google OAuth authorization URL.
+3. **User Consent:** Alice opens the authorization link in her browser. Google's OAuth consent screen displays the requested read-only scope.
+4. **Two-Hop Token Hand-off:**
+   * Google redirects Alice's browser with the OAuth authorization code to Auth Manager's callback (`agentidentitycredentials.googleapis.com/.../oauthcallback`).
+   * Auth Manager terminates the OAuth exchange, obtains refresh and access tokens, saves them in its vault keyed by user `u-alice`, and redirects Alice's browser to the email app's `continueUri` (`https://email-app-callback-...a.run.app/oauth/continue`).
+5. **Finalization & Agent Provisioning:** The email app receives the callback, calls Auth Manager's `credentials:finalize` API, and creates Alice's isolated Substrate atespace (`u-alice`), actor template, actor (`mail-agent`), and egress policy through Substrate's control plane API (`ate-api`).
 
-You need: a Google Cloud project, `gcloud` (logged in), `kubectl`, `podman`,
-`go` 1.27, `jq`, `envsubst`, `git`, and `pv` for the typing effect.
+### Phase 2: Agent Execution & Egress Token Injection
+1. **Sandboxed Request:** The agent runs in a gVisor sandbox with no tokens or GCP metadata server access. To search mail, it issues a standard HTTPS request to `gmail.googleapis.com` with a dummy placeholder `Authorization` header.
+2. **Egress Interception:** Substrate's egress gateway (`atenet-egress`) intercepts the traffic and evaluates the actor's egress policy.
+3. **SPIFFE-Attributed Credential Resolution:** The egress policy specifies a credential source URI: `ate-secret://authmanager.demo/gmail-oauth/gmail.readonly`. The gateway calls Substrate's credential provider plugin (`authmanager-provider`) over mTLS, passing the URI and the actor's verified SPIFFE ID (`spiffe://cluster.local/ns/u-alice/sa/worker-for-actor/u-alice/mail-agent`).
+4. **Scope & Identity Enforcement:** The provider extracts the atespace (`u-alice`) from the SPIFFE ID and validates the scope against the URI. An agent can only ever request tokens belonging to its own user's atespace. The provider fetches an active OAuth access token from Auth Manager.
+5. **Gateway Token Injection:** The gateway replaces the placeholder header with `Authorization: Bearer ya29...` before forwarding the request to Google.
+6. **Least-Privilege Enforcement:** Read requests succeed with HTTP 200. Destructive operations (such as `messages.trash`) are rejected by Google with HTTP 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT` because the token is strictly scoped to `gmail.readonly`.
 
-1. Configure:
+## Walkthrough: What You See in the Demo
 
-   ```bash
-   cp demo.env.example demo.env
-   $EDITOR demo.env   # PROJECT_ID, DEMO_EMAIL, region/cluster names
-   ```
+The demo runs in ~90 seconds across 6 steps:
 
-   `DEMO_EMAIL` is the Google account whose mail the agent reads.
-   `DISPLAY_EMAIL` (default `alice@gmail.com`) is what the demo shows on screen.
-   `demo.env` is git-ignored.
+| # | Step | Command | What it demonstrates |
+|---|---|---|---|
+| 1 | OAuth Client Registration | `gcloud agent-identity auth-providers describe` | Inspects the Auth Provider configuration in Auth Manager: the allowed scope (`gmail.readonly`), Auth Manager's redirect callback URL, and the app's continue URI. |
+| 2 | Sign-Up & Consent | `email-app signup alice@gmail.com` | Signs Alice up. The app outputs the copy-paste consent URL and waits. The operator clicks through consent in the browser. |
+| 3 | Provisioned Agent & Policy | `kubectl ate get actors`, `kubectl ate get egress-policy` | Shows that the app created atespace `u-alice`, actor `mail-agent`, and a 1-rule egress policy allowing only `gmail.googleapis.com` with token injection. |
+| 4 | Search Mail (200 OK) | `agent search` | The agent searches Alice's inbox for subject "Agent Substrate Day:". Google returns 200 OK with subjects. The sandbox never held the token. |
+| 5 | Trash Mail (403 Refused) | `agent trash` | The agent attempts to delete a message. Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`. |
+| 6 | Identity & Audit Logs | `kubectl logs` | Egress gateway logs show every request attributed to the agent's SPIFFE ID; credential provider logs confirm token injection scoped to `u-alice`. |
 
-2. Create everything and deploy:
+## Component Layout
 
-   ```bash
-   scripts/setup.sh
-   ```
+```
+cmd/
+  agent/                CLI and HTTP server running inside the Substrate actor sandbox
+  email-app/            Multi-tenant application running on GKE (signs users up, provisions agents)
+  authmanager-provider/ Substrate credential provider plugin (gRPC mTLS) translating SPIFFE IDs to Auth Manager tokens
+  callback-proxy/       Lightweight Cloud Run reverse proxy providing a public HTTPS endpoint for /oauth/continue
+internal/
+  identity/             Email to atespace naming conversions (RFC 1123 compliant)
+  authmanager/          Client for Google Cloud Agent Auth Manager REST API
+  provider/             Implementation of Substrate CredentialProvider gRPC service
+  emailapp/             HTTP handlers for /signup and /oauth/continue
+  substrate/            Client for Substrate ate-api gRPC control plane
+  gmail/                Gmail API search and trash client
+  tlsutil/              Mutual TLS certificate parsing and SPIFFE ID validation
+deploy/                 Kubernetes manifests, ConfigMaps, and Containerfile
+demo/
+  demo.sh               Automated, interactive demo runner using demo-magic
+  reset.sh              Cluster and Auth Manager state reset script for fresh takes
+scripts/
+  setup.sh              One-time cloud infrastructure provisioning (GKE, Artifact Registry, Auth Manager)
+  up.sh                 Substrate installation and demo workload deployment
+  lib.sh                Shared environment verification, build helpers, and kubectl-ate wrapper
+```
 
-   It enables APIs, creates the GKE cluster, Artifact Registry repo, snapshot
-   bucket and service account, and the Auth Manager provider, then runs
-   `scripts/up.sh` to install Substrate (built from source at
-   `SUBSTRATE_COMMIT`) and deploy the demo. Every step is idempotent.
+## Running the Demo
 
-   Partway through it asks you to create an OAuth client in the Cloud console
-   (it prints the exact steps and redirect URI), then reads the client ID and
-   secret from your terminal. Use a project whose OAuth consent screen can be
-   External, and add `DEMO_EMAIL` as a test user.
+### Prerequisites
+* Google Cloud project with billing enabled
+* `gcloud` CLI (v592.0.0+ with `agent-identity` and `gke-gcloud-auth-plugin`)
+* `kubectl`, `podman`, `go` 1.27, `jq`, `envsubst`, `git`
+* `pv` (optional, for terminal typing animation)
 
-To redeploy after code changes: `scripts/up.sh` (or `SKIP_SUBSTRATE=1
-scripts/up.sh` to skip reinstalling Substrate).
-
-## Run the demo
-
-You can run the demo from any machine (e.g. a laptop) once the environment is
-set up. Copy `demo.env` there (it's git-ignored). You need `gcloud` with
-`gke-gcloud-auth-plugin`, `kubectl`, `jq` and `curl`; `demo/reset.sh` also
-needs `go`, `git` and `envsubst`. On first run the scripts fetch cluster
-credentials into `.cache/kubeconfig` (your `~/.kube/config` is not touched),
-and `reset.sh` builds `kubectl-ate` from `SUBSTRATE_DIR` (or clones
-Substrate into `.cache/substrate` if that path doesn't exist).
-
+### 1. Initial Setup (One-time)
+Create and populate `demo.env`:
 ```bash
-demo/reset.sh      # delete Alice's agent and atespace, revoke her grant
-demo/demo.sh       # press ENTER to advance each step
-demo/demo.sh -n    # unattended: no typing or pauses
+cp demo.env.example demo.env
+$EDITOR demo.env
 ```
 
-- At step 3 the script prints the consent link (also saved to
-  `.cache/consent-url.txt`). Paste it into a browser signed in as `DEMO_EMAIL`
-  and allow access. The script continues once the app has created the agent. The script continues by itself once the grant is finalized.
-- Only the newest consent link works: each sign-up starts a new attempt.
-- Run `demo/reset.sh` before each take.
-- Each step starts on a cleared screen; `TOP_PAD=6 demo/demo.sh` adds more
-  blank lines above it.
-- `scripts/up.sh` makes the egress gateway log every request, not just
-  errors (Substrate's default is status >= 400 plus a 1% sample).
-- `TYPE_SPEED_OVERRIDE=40 demo/demo.sh` types faster.
-
-## Tests
-
+Run the infrastructure setup:
 ```bash
-podman run --rm -v $PWD:/src:Z -w /src mirror.gcr.io/library/golang:1.27 go test -race ./...
+scripts/setup.sh
+```
+This script creates the GKE cluster, Artifact Registry repository, snapshot bucket, service accounts, and Auth Manager provider. When prompted, create an external OAuth 2.0 Web Client in the Google Cloud Console with the printed redirect URI, and supply the Client ID and Secret.
+
+### 2. Execution
+Run `demo/reset.sh` before each demo take to revoke Alice's grant, delete her atespace and agent, and flush caches:
+```bash
+demo/reset.sh
 ```
 
-## Layout
-
+Run the demo script:
+```bash
+demo/demo.sh        # Interactive mode: press ENTER to advance commands
+demo/demo.sh -n     # Non-interactive mode: advances automatically
 ```
-cmd/            agent, email-app, authmanager-provider, callback-proxy
-internal/       identity, authmanager client, provider, emailapp, substrate (ate-api client), gmail, tlsutil
-deploy/         Kubernetes manifests, actor template, egress policy, Containerfile
-scripts/        setup.sh (one-time environment), up.sh (install + deploy), lib.sh
-demo/           demo.sh (walkthrough), reset.sh
-third_party/    Substrate credential provider and control-plane API stubs (Apache-2.0), demo-magic.sh (MIT)
+
+Tips:
+* At Step 2, copy the printed authorization link into a browser signed into `DEMO_EMAIL` and click Allow. The script resumes automatically once the agent is created.
+* `demo/reset.sh` can be executed between takes without redeploying the infrastructure.
+* `TOP_PAD=6 demo/demo.sh` adds top padding to keep command output centered vertically on screen.
+* `TYPE_SPEED_OVERRIDE=40 demo/demo.sh` adjusts typing speed.
+
+## Automated Verification
+
+Run unit tests inside the Go container:
+```bash
+podman run --rm -v "$PWD":/src:Z -w /src mirror.gcr.io/library/golang:1.27 go test -race ./...
 ```
