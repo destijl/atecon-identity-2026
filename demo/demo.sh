@@ -35,6 +35,7 @@ DEMO_CMD_COLOR="${WHITE}"
 if $UNATTENDED; then NO_WAIT=true; unset TYPE_SPEED; fi
 
 ensure_kubeconfig
+ensure_kubectl_ate
 PORT=18070
 PF_PID=""
 cleanup() { if [[ -n "${PF_PID}" ]]; then kill "${PF_PID}" 2>/dev/null || true; fi; }
@@ -67,16 +68,34 @@ agent() {
   curl -sS -m 60 -X "${method}" "localhost:${PORT}/agent/$1" | sed "s/${DEMO_EMAIL}/${DISPLAY_EMAIL}/g" | jq -C .
 }
 banner() { echo; printf '%b\n' "${BOLD}${YELLOW}# $*${COLOR_RESET}"; }
+note() { printf '%b\n' "${CYAN}#   $*${COLOR_RESET}"; }
 pause() { $UNATTENDED || wait; }
 
-clear
-banner "Alice's email agent runs in a Substrate sandbox (atespace ${ATESPACE})."
-banner "1. What credentials does the agent hold?"
-pe "agent audit"
+# section starts a step on a clean screen, a few lines down, so the output
+# stays in view. In interactive mode it first waits for ENTER so the audience
+# can finish reading the previous step. TOP_PAD sets the blank lines.
+TOP_PAD="${TOP_PAD:-3}"
+FIRST=true
+section() {
+  $FIRST || pause
+  FIRST=false
+  clear
+  for ((i = 0; i < TOP_PAD; i++)); do echo; done
+  banner "$@"
+}
 
-banner "2. Search Alice's Gmail for subject \"Agent Substrate Day:\""
+section "1. Alice's email agent runs in a Substrate sandbox (atespace ${ATESPACE}). Its egress policy:"
+p "kubectl ate get egress-policy ${ACTOR} -a ${ATESPACE} -o yaml"
+kubectl ate get egress-policy "${ACTOR}" -a "${ATESPACE}" -o yaml 2>/dev/null \
+  | awk '/^metadata:/{skip=1; next} /^[^ ]/{skip=0} !skip'
+echo
+note "gmail.googleapis.com: the gateway swaps in Alice's OAuth token (gmail.readonly) from a credential provider"
+note "email-app: the gateway swaps in a short-lived actor JWT naming this agent"
+note "anything else: denied"
+
+section "2. The agent searches Alice's Gmail for subject \"Agent Substrate Day:\""
 pe "agent search"
-banner "   403 from Substrate's egress gateway: no grant for Alice yet. Ask the app for a consent link."
+note "403 from Substrate's egress gateway: Alice hasn't granted access yet. Ask the app for a consent link."
 p "agent consent"
 CONSENT="$(curl -sS -m 60 "localhost:${PORT}/agent/consent")"
 jq -C '.authorizationUrl |= (if . then (.[0:60] + "…") else . end)' <<<"${CONSENT}"
@@ -86,30 +105,32 @@ if [[ -n "${URL}" ]]; then
   command -v xdg-open >/dev/null && [[ -n "${DISPLAY:-}" ]] && { xdg-open "${URL}" >/dev/null 2>&1 || true; }
 fi
 
-banner "3. Alice opens the link and grants read-only access (gmail.readonly)"
+section "3. Alice opens the link and grants read-only access (gmail.readonly)"
 echo "   (full link: .cache/consent-url.txt)"
+echo
 printf '%s' "   waiting for consent "
 # Watch the app's log; asking /consent again would start a new attempt.
 until kubectl -n email-app logs deploy/email-app --since-time="${START}" 2>/dev/null | grep -q '"consent finalized"'; do
   printf '.'; sleep 2
 done
 echo " ✓"
-pause
 
-banner "4. Same call, same sandbox"
+section "4. Same call, same sandbox"
 pe "agent search"
-banner "   ...and the sandbox still holds no token"
-pe "agent audit"
+note "The agent never held a token: the gateway added it on the way out."
 
-banner "5. The agent tries to trash a message"
+section "5. The agent tries to trash a message"
 pe "agent trash"
-banner "   Google refuses: the token is scoped to gmail.readonly"
+note "Google refuses: the token is scoped to gmail.readonly"
 
-banner "6. What the logs say"
+section "6. What the logs say"
 p "kubectl logs -n ate-system deploy/atenet-egress -c envoy | grep gmail"
+# One line per Gmail call the agent made; the per-message metadata reads
+# are left out to keep it short (and keep message IDs off screen).
 kubectl -n ate-system logs deploy/atenet-egress -c envoy --since-time="${START}" 2>/dev/null \
-  | grep '"leg":"mitm"' | grep gmail.googleapis.com | tail -2 \
-  | jq -C -c '{actor, authority, method, path: (.path|sub("\\?.*";"")), status}' || true
+  | grep '"leg":"mitm"' | grep gmail.googleapis.com \
+  | jq -C -c 'select(.path | test("/messages/[^/]+$") | not) | {actor, method, path: (.path|sub("\\?.*";"")), status}' || true
+echo
 p "kubectl logs -n ate-system deploy/authmanager-provider | grep injected"
 kubectl -n ate-system logs deploy/authmanager-provider --since-time="${START}" 2>/dev/null \
   | grep 'credential injected' | tail -1 | jq -C -c '{msg, actor, user, scope}' || true

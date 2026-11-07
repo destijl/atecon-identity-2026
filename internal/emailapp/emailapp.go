@@ -182,7 +182,7 @@ func (a *App) handleConsent(w http.ResponseWriter, r *http.Request) {
 		out.Status = "already_granted"
 	} else {
 		out.Status = "consent_required"
-		out.AuthorizationURL = withLoginHint(res.Consent.AuthorizationURL, u.GoogleAccount)
+		out.AuthorizationURL = authURL(res.Consent.AuthorizationURL, u.GoogleAccount)
 		a.remember(user, pendingConsent{uid: res.Consent.UID, nonce: res.Consent.Nonce, created: a.now()})
 	}
 	slog.InfoContext(r.Context(), "consent link issued", "actor", actor.String(), "user", email, "status", out.Status)
@@ -229,17 +229,20 @@ func (a *App) handleContinue(w http.ResponseWriter, r *http.Request) {
 	_ = donePage.Execute(w, map[string]any{"OK": true, "Email": a.Users[user].Email})
 }
 
-// withLoginHint adds login_hint to a Google authorization URL.
-func withLoginHint(raw, account string) string {
-	if account == "" {
-		return raw
-	}
+// authURL adjusts a Google authorization URL for the demo. prompt=consent
+// makes Google show the consent screen even if the account granted this
+// client before (revoking the Auth Manager grant doesn't revoke Google's).
+// login_hint, if set, preselects the account.
+func authURL(raw, account string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return raw
 	}
 	q := u.Query()
-	q.Set("login_hint", account)
+	q.Set("prompt", "consent")
+	if account != "" {
+		q.Set("login_hint", account)
+	}
 	u.RawQuery = q.Encode()
 	return u.String()
 }

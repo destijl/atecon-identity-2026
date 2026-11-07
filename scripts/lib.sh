@@ -76,3 +76,19 @@ agent_ref() {
   [[ -n "${ref}" ]] || die "no agent image: run scripts/up.sh first"
   printf '%s\n' "${ref}"
 }
+
+# log_all_egress makes Substrate's egress gateway log every actor request.
+# Its access log filter keeps status >= 400 (plus a 1% sample) by default; the
+# runtime key meant to lower that (access_log.min_status) can't be set because
+# the gateway's Envoy has no admin runtime layer. So lower the default itself.
+log_all_egress() {
+  local cfg
+  cfg="$(kubectl -n ate-system get configmap atenet-egress -o json)"
+  if ! grep -q 'default_value: 400, runtime_key: access_log.min_status' <<<"${cfg}"; then
+    return 0   # already done, or the manifest changed shape
+  fi
+  jq '.data |= with_entries(.value |= gsub("default_value: 400, runtime_key: access_log.min_status"; "default_value: 0, runtime_key: access_log.min_status"))' \
+    <<<"${cfg}" | kubectl replace -f - >/dev/null
+  kubectl -n ate-system rollout restart deploy/atenet-egress >/dev/null
+  kubectl -n ate-system rollout status deploy/atenet-egress --timeout=180s >/dev/null
+}

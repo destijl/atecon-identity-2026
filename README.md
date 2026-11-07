@@ -18,13 +18,13 @@ without putting a token in the sandbox.
 
 | # | On screen | What it shows |
 |---|---|---|
-| 1 | `agent audit` | The sandbox has no secret env vars, no credential files and no metadata server: `zeroAmbientVerified: true`. |
+| 1 | `kubectl ate get egress-policy` | The agent's egress policy: Gmail gets Alice's OAuth token from the Auth Manager credential provider, the email app gets an actor JWT, everything else is denied. |
 | 2 | `agent search` | Gmail call is refused by Substrate's egress gateway (403): Alice hasn't granted access yet. |
 | 2b | `agent consent` | The app hands the agent a consent link. It knows which agent is asking from an actor JWT the gateway injected. |
-| 3 | browser | Alice consents to "View your email messages and settings" (`gmail.readonly`). |
-| 4 | `agent search`, `agent audit` | Same call now returns 200 with up to 3 subjects matching `Agent Substrate Day:`. The sandbox still holds no token. |
+| 3 | browser | Alice consents to "View your email messages and settings" (`gmail.readonly`). The link carries `prompt=consent`, so Google shows the screen on every take. |
+| 4 | `agent search` | Same call now returns 200 with up to 3 subjects matching `Agent Substrate Day:`. The agent never holds the token. |
 | 5 | `agent trash` | Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`: the token can't delete mail. |
-| 6 | logs | The egress gateway logs the call under the agent's SPIFFE ID; the credential provider logs which actor got which user's token. |
+| 6 | logs | The egress gateway logs each Gmail call (403, 200, 403) under the agent's SPIFFE ID; the credential provider logs which actor got which user's token. |
 
 ## How it works
 
@@ -128,9 +128,11 @@ demo/demo.sh -n    # unattended: no typing or pauses
   `.cache/consent-url.txt`. Open it in a browser signed in as `DEMO_EMAIL` and
   allow access. The script continues by itself once the grant is finalized.
 - Only the newest consent link works: each request starts a new attempt.
-- Run `demo/reset.sh` before each take. If Google skips the consent screen
-  because it remembers the earlier grant, remove the app at
-  <https://myaccount.google.com/connections> and run it again.
+- Run `demo/reset.sh` before each take.
+- Each step starts on a cleared screen; `TOP_PAD=6 demo/demo.sh` adds more
+  blank lines above it.
+- `scripts/up.sh` makes the egress gateway log every request, not just
+  errors (Substrate's default is status >= 400 plus a 1% sample).
 - `TYPE_SPEED_OVERRIDE=40 demo/demo.sh` types faster.
 
 ## Tests

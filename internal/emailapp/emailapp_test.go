@@ -192,7 +192,7 @@ func TestLoginHint(t *testing.T) {
 	app.InternalHandler().ServeHTTP(rec, httptest.NewRequest("GET", "/consent", nil))
 	var out ConsentResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	if !strings.Contains(out.AuthorizationURL, "login_hint=real.person%40gmail.com") || out.User != "alice@gmail.com" {
+	if !strings.Contains(out.AuthorizationURL, "login_hint=real.person%40gmail.com") || !strings.Contains(out.AuthorizationURL, "prompt=consent") || out.User != "alice@gmail.com" {
 		t.Errorf("response = %+v", out)
 	}
 }

@@ -39,6 +39,9 @@ if [[ "${SKIP_SUBSTRATE:-0}" != 1 ]]; then
   )
 fi
 
+step "Egress gateway: log every actor request, not just errors"
+log_all_egress
+
 step "Images"
 build_push agent
 build_push email-app
