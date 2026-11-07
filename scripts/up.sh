@@ -65,8 +65,11 @@ build_push callback-proxy
 CALLBACK_PROXY_IMAGE="$(cat "${CACHE}/callback-proxy.ref")"
 CONTINUE_URL="$(continue_url || true)"
 export CONTINUE_URL="${CONTINUE_URL:-https://pending.invalid/oauth/continue}"
-render_app() { envsubst '${EMAIL_APP_IMAGE} ${AUTH_PROVIDER} ${CONTINUE_URL} ${DISPLAY_EMAIL} ${DEMO_EMAIL} ${ATESPACE}' < "${ROOT}/deploy/email-app.yaml"; }
+render_app() { envsubst '${EMAIL_APP_IMAGE} ${AGENT_IMAGE} ${AUTH_PROVIDER} ${CONTINUE_URL} ${DISPLAY_EMAIL} ${DEMO_EMAIL} ${ATESPACE} ${ACTOR}' < "${ROOT}/deploy/email-app.yaml"; }
 render_app | kubectl apply -f -
+# The actor-facing Service from the earlier design (actors asked the app for
+# consent links); nothing uses it now.
+kubectl -n email-app delete service email-app --ignore-not-found >/dev/null
 step "Waiting for the internal callback load balancer IP"
 for _ in $(seq 60); do ILB="$(internal_callback_ip || true)"; [[ -n "${ILB}" ]] && break; sleep 5; done
 [[ -n "${ILB}" ]] || die "email-app-callback has no internal IP"
@@ -96,6 +99,16 @@ step "atelet may pull actor images (Workload Identity)"
 gcloud artifacts repositories add-iam-policy-binding "${IMAGE_REPO##*/}" --location "${REGION}" --project "${PROJECT_ID}" \
   --role roles/artifactregistry.reader --format=none \
   --member "principal://iam.googleapis.com/projects/${PN}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/ate-system/sa/atelet"
+
+step "email-app is a Substrate global owner (it creates an atespace per user)"
+# "get" exits 0 and prints "global has no access policy" when there is none.
+GLOBAL_POLICY="$(kubectl-ate get access-policy --global -o yaml 2>/dev/null)"
+if grep -q 'has no access policy' <<<"${GLOBAL_POLICY}"; then
+  kubectl-ate create access-policy --global -f "${ROOT}/deploy/global-access-policy.yaml" >/dev/null 2>&1
+  GLOBAL_POLICY="$(kubectl-ate get access-policy --global -o yaml 2>/dev/null)"
+fi
+grep -q 'system:serviceaccount:email-app:email-app' <<<"${GLOBAL_POLICY}" \
+  || die "the global access policy doesn't make email-app an owner; add deploy/global-access-policy.yaml's binding to it"
 
 step "Worker pool"
 envsubst '${WORKER_IMAGE}' < "${ROOT}/deploy/workerpool.yaml" | kubectl apply -f -

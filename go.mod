@@ -3,7 +3,6 @@ module github.com/destijl/atecon-identity-2026
 go 1.27.0
 
 require (
-	github.com/go-jose/go-jose/v4 v4.1.9
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 )

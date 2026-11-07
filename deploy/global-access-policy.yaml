@@ -1,0 +1,8 @@
+# Global access policy: email-app is a global owner, because creating an
+# atespace per user requires it (Substrate has no narrower role for that).
+metadata:
+  name: default
+bindings:
+- role: owner
+  members:
+  - user:system:serviceaccount:email-app:email-app

@@ -16,27 +16,30 @@ without putting a token in the sandbox.
 
 ## What you'll see
 
+Two parts, matching the talk's slides: Alice signs up (and consents) before any
+agent exists, then her agent makes requests.
+
 | # | On screen | What it shows |
 |---|---|---|
-| 1 | `kubectl ate get egress-policy` | The agent's egress policy: Gmail gets Alice's OAuth token from the Auth Manager credential provider, the email app gets an actor JWT, everything else is denied. |
-| 2 | `gcloud agent-identity auth-providers describe` | The OAuth client in Auth Manager: allowed scope `gmail.readonly`, Auth Manager's redirect URL (it receives and stores the tokens), and the email app's continue URI. |
-| 3 | `agent search` | Gmail call is refused by Substrate's egress gateway (403): Alice hasn't granted access yet. |
-| 3b | `agent consent` | The app hands the agent a consent link. It knows which agent is asking from an actor JWT the gateway injected. |
-| 4 | browser | Alice consents to "View your email messages and settings" (`gmail.readonly`). The link carries `prompt=consent`, so Google shows the screen on every take. |
-| 5 | `agent search` | Same call now returns 200 with up to 3 subjects matching `Agent Substrate Day:`. The agent never holds the token. |
+| 1 | `gcloud agent-identity auth-providers describe` | The app's OAuth client in Auth Manager: allowed scope `gmail.readonly`, Auth Manager's redirect URL (it receives and stores the tokens), and the email app's continue URI. |
+| 2 | `email-app signup alice@gmail.com` | Alice signs up. The app asks Auth Manager for a consent link for her atespace, `u-alice`. No agent exists yet. |
+| 3 | browser | Alice consents to "View your email messages and settings" (`gmail.readonly`). The link carries `prompt=consent`, so Google shows the screen on every take. The domain on the screen is Auth Manager's, which holds the tokens. |
+| 4 | `kubectl ate get actors`, `kubectl ate get egress-policy` | The app has created atespace `u-alice`, the actor `mail-agent` and its one-rule egress policy through the Substrate API. |
+| 5 | `agent search` | 200 with up to 3 subjects matching `Agent Substrate Day:`. The agent never holds the token. |
 | 6 | `agent trash` | Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`: the token can't delete mail. |
-| 7 | logs | The egress gateway logs each Gmail call (403, 200, 403) under the agent's SPIFFE ID; the credential provider logs which actor got which user's token. |
+| 7 | logs | The egress gateway logs each Gmail call (200, 403) under the agent's SPIFFE ID; the credential provider logs which actor got which user's token. |
 
 ## How it works
 
 ```mermaid
 flowchart LR
   subgraph app["Email app (GKE, outside Substrate)"]
-    ea["email-app<br/>consent links, finalize"]
+    ea["email-app<br/>sign-up, finalize, create agent"]
   end
   cr["callback-proxy<br/>(Cloud Run, HTTPS)"]
   subgraph sub["Agent Substrate"]
-    agent["email agent<br/>(actor, zero creds)"]
+    api["ate-api"]
+    agent["mail-agent<br/>(actor in u-alice, zero creds)"]
     gw["egress gateway"]
     prov["authmanager-provider<br/>(credential provider)"]
   end
@@ -44,35 +47,34 @@ flowchart LR
   gmail["gmail.googleapis.com"]
   user["Alice's browser"]
 
+  ea -->|"1 credentials:retrieve"| am
+  user -->|"2 consent"| am
+  am -->|"3 redirect"| cr --> ea
+  ea -->|"credentials:finalize"| am
+  ea -->|"4 create atespace, actor, egress policy"| api
   agent -->|"Authorization: placeholder"| gw
   gw -->|"FetchSecret(uri, actor SPIFFE ID)"| prov
   prov -->|"credentials:retrieve"| am
   gw -->|"Authorization: Bearer token"| gmail
-  agent -->|"GET /consent"| gw
-  gw -->|"actor JWT injected"| ea
-  user -->|"consent"| am
-  am -->|"redirect"| cr --> ea
-  ea -->|"credentials:finalize"| am
 ```
 
+- **`cmd/email-app`** is the application, on plain Kubernetes:
+  - At sign-up it asks Auth Manager for a consent link for the user's atespace (`alice@gmail.com` → `u-alice`).
+  - When the browser returns, it finalizes the grant and then creates the user's atespace, actor and egress policy through the Substrate API. It authenticates with a projected ServiceAccount token and is a Substrate global owner (`deploy/global-access-policy.yaml`), because creating atespaces requires that role and a multi-tenant app creates one per user.
+  - It lets the operator drive the agent through Substrate's ingress router.
 - **`cmd/agent`** runs in the actor. It sends a placeholder `Authorization`
   header; the gateway replaces it.
 - **`cmd/authmanager-provider`** implements Substrate's credential provider
   plugin API (`FetchSecret`). The user is the actor's atespace, taken from the
-  SPIFFE ID the gateway verified (`alice@gmail.com` → atespace
-  `alice-gmail-com`), so an agent can only ever get its own user's token. URIs
-  name only the scope: `ate-secret://authmanager.demo/oauth/gmail.readonly`.
-- **`cmd/email-app`** is the application, on plain Kubernetes. It gives agents a
-  consent link (a credential provider can only return a secret or an error, so
-  consent has to come from the app), finalizes the grant when the browser
-  returns, and lets the operator drive the agent through Substrate's ingress
-  router.
+  SPIFFE ID the gateway verified, so an agent can only ever get its own user's
+  token. URIs name only the scope:
+  `ate-secret://authmanager.demo/gmail-oauth/gmail.readonly`.
 - **`cmd/callback-proxy`** is the app's HTTPS front door on Cloud Run, so the
   browser lands on a page with a valid certificate. It forwards only
   `/oauth/continue` to the app over the VPC.
-- **`deploy/egress-policy.yaml`**: the agent may reach exactly Gmail (with the
-  OAuth token injected) and the app's consent endpoint (with an actor JWT
-  injected). Nothing else.
+- **The agent's template and egress policy** are in the `email-app-agent`
+  ConfigMap in `deploy/email-app.yaml`. The policy has one rule: Gmail, with
+  the OAuth token injected. Nothing else is reachable.
 
 ## Setup
 
@@ -120,15 +122,15 @@ and `reset.sh` builds `kubectl-ate` from `SUBSTRATE_DIR` (or clones
 Substrate into `.cache/substrate` if that path doesn't exist).
 
 ```bash
-demo/reset.sh      # fresh agent, revoke any earlier grant
+demo/reset.sh      # delete Alice's agent and atespace, revoke her grant
 demo/demo.sh       # press ENTER to advance each step
 demo/demo.sh -n    # unattended: no typing or pauses
 ```
 
-- At step 4 the script prints the consent link (also saved to
+- At step 3 the script prints the consent link (also saved to
   `.cache/consent-url.txt`). Paste it into a browser signed in as `DEMO_EMAIL`
-  and allow access. The script continues by itself once the grant is finalized.
-- Only the newest consent link works: each request starts a new attempt.
+  and allow access. The script continues once the app has created the agent. The script continues by itself once the grant is finalized.
+- Only the newest consent link works: each sign-up starts a new attempt.
 - Run `demo/reset.sh` before each take.
 - Each step starts on a cleared screen; `TOP_PAD=6 demo/demo.sh` adds more
   blank lines above it.
@@ -146,9 +148,9 @@ podman run --rm -v $PWD:/src:Z -w /src mirror.gcr.io/library/golang:1.27 go test
 
 ```
 cmd/            agent, email-app, authmanager-provider, callback-proxy
-internal/       identity, authmanager client, provider, emailapp, gmail, audit, actorjwt, tlsutil
+internal/       identity, authmanager client, provider, emailapp, substrate (ate-api client), gmail, tlsutil
 deploy/         Kubernetes manifests, actor template, egress policy, Containerfile
 scripts/        setup.sh (one-time environment), up.sh (install + deploy), lib.sh
 demo/           demo.sh (walkthrough), reset.sh
-third_party/    Substrate credential provider API (Apache-2.0), demo-magic.sh (MIT)
+third_party/    Substrate credential provider and control-plane API stubs (Apache-2.0), demo-magic.sh (MIT)
 ```

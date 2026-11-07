@@ -1,14 +1,14 @@
 // Package emailapp is the "application" in the demo: it runs on plain
 // Kubernetes, outside Substrate, and owns the user relationship.
 //
-// It has two HTTP surfaces:
+// Sign-up happens before any agent exists:
 //
-//   - Internal (ClusterIP, reachable only from the Substrate egress gateway):
-//     GET /consent. The caller is an actor; the gateway injected an actor JWT
-//     naming it. The app derives the user from the actor's atespace and asks
-//     Auth Manager for a consent link for that user.
-//   - Public (LoadBalancer): GET /oauth/continue, where the user's browser
-//     lands after Google consent. It finalizes the grant with Auth Manager.
+//   - POST /signup (operator listener): a user signs up. The app asks Auth
+//     Manager for a consent link for the user's atespace and gmail.readonly.
+//   - GET /oauth/continue (public, behind the Cloud Run front door): the
+//     user's browser lands here after Google consent. The app finalizes the
+//     grant with Auth Manager, then creates the user's atespace, agent actor
+//     and egress policy through the Substrate API.
 package emailapp
 
 import (
@@ -34,15 +34,15 @@ type AuthManager interface {
 	Finalize(ctx context.Context, userID, validationState, nonce string) error
 }
 
-// ActorVerifier authenticates the actor calling /consent.
-type ActorVerifier interface {
-	FromRequest(r *http.Request) (identity.Actor, error)
+// Provisioner creates a user's agent once the user has consented.
+type Provisioner interface {
+	Provision(ctx context.Context, atespace string) error
 }
 
 // App is the email app.
 type App struct {
 	AuthManager AuthManager
-	Verifier    ActorVerifier
+	Provisioner Provisioner
 	// Scope is the full OAuth scope requested.
 	Scope string
 	// ContinueURL is the public /oauth/continue URL.
@@ -132,12 +132,39 @@ type User struct {
 	GoogleAccount string
 }
 
-// InternalHandler serves the actor-facing API.
-func (a *App) InternalHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /consent", a.handleConsent)
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
-	return mux
+// HandleSignup serves POST /signup?email=<user>. It is mounted on the
+// operator listener, standing in for the app's own sign-up page.
+func (a *App) HandleSignup(w http.ResponseWriter, r *http.Request) {
+	email := r.FormValue("email")
+	user, err := identity.AtespaceForEmail(email)
+	u, ok := a.Users[user]
+	if err != nil || !ok {
+		http.Error(w, "unknown user", http.StatusNotFound)
+		return
+	}
+	res, err := a.AuthManager.Retrieve(r.Context(), user, []string{a.Scope}, a.ContinueURL)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "signup: auth manager", "user", u.Email, "err", err)
+		http.Error(w, "auth manager unavailable", http.StatusBadGateway)
+		return
+	}
+	out := SignupResponse{User: u.Email, Atespace: user}
+	if res.Consent == nil {
+		// Already granted: go straight to creating the agent.
+		out.Status = "already_granted"
+		if err := a.Provisioner.Provision(r.Context(), user); err != nil {
+			slog.ErrorContext(r.Context(), "signup: creating agent", "user", u.Email, "err", err)
+			http.Error(w, "could not create the agent", http.StatusBadGateway)
+			return
+		}
+	} else {
+		out.Status = "consent_required"
+		out.AuthorizationURL = authURL(res.Consent.AuthorizationURL, u.GoogleAccount)
+		a.remember(user, pendingConsent{uid: res.Consent.UID, nonce: res.Consent.Nonce, created: a.now()})
+	}
+	slog.InfoContext(r.Context(), "signup", "user", u.Email, "atespace", user, "status", out.Status)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // PublicHandler serves the browser-facing callback.
@@ -148,46 +175,12 @@ func (a *App) PublicHandler() http.Handler {
 	return mux
 }
 
-// ConsentResponse is what /consent returns to the actor.
-type ConsentResponse struct {
+// SignupResponse is what /signup returns.
+type SignupResponse struct {
 	User             string `json:"user"`
-	Actor            string `json:"actor"`
+	Atespace         string `json:"atespace"`
 	Status           string `json:"status"` // consent_required | already_granted
 	AuthorizationURL string `json:"authorizationUrl,omitempty"`
-}
-
-func (a *App) handleConsent(w http.ResponseWriter, r *http.Request) {
-	actor, err := a.Verifier.FromRequest(r)
-	if err != nil {
-		slog.WarnContext(r.Context(), "consent: unauthenticated caller", "err", err)
-		http.Error(w, "unauthenticated", http.StatusUnauthorized)
-		return
-	}
-	user := actor.Atespace
-	u, ok := a.Users[user]
-	email := u.Email
-	if !ok {
-		slog.WarnContext(r.Context(), "consent: actor's atespace is not an app user", "actor", actor.String())
-		http.Error(w, "unknown user", http.StatusForbidden)
-		return
-	}
-	res, err := a.AuthManager.Retrieve(r.Context(), user, []string{a.Scope}, a.ContinueURL)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "consent: auth manager", "actor", actor.String(), "err", err)
-		http.Error(w, "auth manager unavailable", http.StatusBadGateway)
-		return
-	}
-	out := ConsentResponse{User: email, Actor: actor.String()}
-	if res.Consent == nil {
-		out.Status = "already_granted"
-	} else {
-		out.Status = "consent_required"
-		out.AuthorizationURL = authURL(res.Consent.AuthorizationURL, u.GoogleAccount)
-		a.remember(user, pendingConsent{uid: res.Consent.UID, nonce: res.Consent.Nonce, created: a.now()})
-	}
-	slog.InfoContext(r.Context(), "consent link issued", "actor", actor.String(), "user", email, "status", out.Status)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
 }
 
 var donePage = template.Must(template.New("done").Parse(`<!doctype html>
@@ -195,7 +188,7 @@ var donePage = template.Must(template.New("done").Parse(`<!doctype html>
 <style>body{font-family:system-ui,sans-serif;max-width:40em;margin:4em auto;color:#202124}
 .ok{color:#188038}.err{color:#c5221f}code{background:#f1f3f4;padding:.1em .3em}</style></head>
 <body>{{if .OK}}<h1 class="ok">✓ Access granted</h1>
-<p>Your email agent can now <b>read</b> mail for <code>{{.Email}}</code>.</p>
+<p>Your email agent is ready and can <b>read</b> mail for <code>{{.Email}}</code>.</p>
 <p>The agent never sees the token: Substrate's egress gateway adds it to the agent's requests to Gmail.</p>
 <p>You can close this tab.</p>
 {{else}}<h1 class="err">Consent not completed</h1><p>{{.Msg}}</p>{{end}}
@@ -217,7 +210,7 @@ func (a *App) handleContinue(w http.ResponseWriter, r *http.Request) {
 	}
 	user, p, ok := a.take(uid)
 	if !ok {
-		fail(http.StatusBadRequest, "This consent link has expired or was already used. Ask the agent to try again.")
+		fail(http.StatusBadRequest, "This consent link has expired or was already used. Sign up again.")
 		return
 	}
 	if err := a.AuthManager.Finalize(r.Context(), user, state, p.nonce); err != nil {
@@ -226,6 +219,11 @@ func (a *App) handleContinue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.InfoContext(r.Context(), "consent finalized", "user", a.Users[user].Email)
+	if err := a.Provisioner.Provision(r.Context(), user); err != nil {
+		slog.ErrorContext(r.Context(), "creating agent failed", "user", a.Users[user].Email, "err", err)
+		fail(http.StatusBadGateway, "Access was granted, but the app could not create your agent.")
+		return
+	}
 	_ = donePage.Execute(w, map[string]any{"OK": true, "Email": a.Users[user].Email})
 }
 

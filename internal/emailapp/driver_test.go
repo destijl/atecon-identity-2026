@@ -16,14 +16,13 @@ func TestDriverForwards(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer router.Close()
-	d := &Driver{RouterURL: router.URL, Actor: "alice-gmail-com/email-agent", Client: router.Client()}
+	d := &Driver{RouterURL: router.URL, Actor: "u-alice/mail-agent", Client: router.Client()}
 
 	tests := []struct {
 		method, path string
 		want         int
 		wantFwd      string
 	}{
-		{method: "GET", path: "/agent/audit", want: 200, wantFwd: "/audit"},
 		{method: "GET", path: "/agent/search", want: 200, wantFwd: "/search"},
 		{method: "POST", path: "/agent/trash", want: 200, wantFwd: "/trash"},
 		{method: "GET", path: "/agent/trash", want: 405},
@@ -39,7 +38,7 @@ func TestDriverForwards(t *testing.T) {
 			t.Errorf("%s %s = %d, want %d (%s)", tt.method, tt.path, rec.Code, tt.want, b)
 			continue
 		}
-		if tt.wantFwd != "" && (gotPath != tt.wantFwd || gotActor != "alice-gmail-com/email-agent" || gotMethod != tt.method) {
+		if tt.wantFwd != "" && (gotPath != tt.wantFwd || gotActor != "u-alice/mail-agent" || gotMethod != tt.method) {
 			t.Errorf("%s %s forwarded as %s %s actor=%q", tt.method, tt.path, gotMethod, gotPath, gotActor)
 		}
 		if tt.wantFwd == "" && gotPath != "" {

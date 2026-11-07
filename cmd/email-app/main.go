@@ -1,10 +1,9 @@
 // Command email-app is the demo's application: it runs on plain Kubernetes,
-// outside Substrate, hands actors consent links for their user, and
-// finalizes the grant when the user's browser returns from Google.
+// outside Substrate. A user signs up, consents to gmail.readonly, and the app
+// then creates the user's atespace, agent actor and egress policy.
 package main
 
 import (
-	"crypto/tls"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -12,24 +11,26 @@ import (
 	"strings"
 	"time"
 
-	"github.com/destijl/atecon-identity-2026/internal/actorjwt"
 	"github.com/destijl/atecon-identity-2026/internal/authmanager"
 	"github.com/destijl/atecon-identity-2026/internal/emailapp"
-	"github.com/destijl/atecon-identity-2026/internal/tlsutil"
+	"github.com/destijl/atecon-identity-2026/internal/substrate"
+	ateapi "github.com/destijl/atecon-identity-2026/third_party/ateapi"
 )
 
 func main() {
-	internal := flag.String("internal-address", ":8080", "actor-facing listener (/consent)")
 	public := flag.String("public-address", ":8090", "browser-facing listener (/oauth/continue)")
+	operator := flag.String("operator-address", ":8070", "operator listener (/signup, /agent/{op}); reach it with kubectl port-forward only")
 	authProvider := flag.String("auth-provider", "", "projects/<p>/locations/<l>/authProviders/<name> (required)")
 	scope := flag.String("scope", "https://www.googleapis.com/auth/gmail.readonly", "OAuth scope requested")
 	continueURL := flag.String("continue-url", "", "public URL of /oauth/continue (required)")
 	users := flag.String("users", "", "comma-separated users as email[=google-account] (required)")
-	issuer := flag.String("actor-jwt-issuer", "https://idp.ate-system.svc", "actor JWT issuer")
-	audience := flag.String("actor-jwt-audience", "email-app", "audience the egress gateway puts in actor JWTs for this app")
-	jwksURL := flag.String("jwks-url", "https://idp.ate-system.svc/openid/v1/jwks", "actor JWT JWKS")
-	jwksCA := flag.String("jwks-ca-file", "/run/servicedns-ca/trust-bundle.pem", "CA for the JWKS server cert")
-	driver := flag.String("driver-address", ":8070", "operator listener (/agent/{op}); reach it with kubectl port-forward only")
+	serviceDNSCA := flag.String("servicedns-ca-file", "/run/servicedns-ca/trust-bundle.pem", "CA for Substrate service certificates (ate-api, router)")
+	ateAPI := flag.String("ate-api", "api.ate-system.svc:443", "Substrate API address")
+	ateAPIName := flag.String("ate-api-server-name", "api.ate-system.svc", "Substrate API TLS server name")
+	ateAPIToken := flag.String("ate-api-token-file", "/run/ate-api-token/token", "projected ServiceAccount token for the Substrate API")
+	templatePath := flag.String("agent-template", "/etc/email-app/actor-template.json", "the agent's actor template (protojson)")
+	policyPath := flag.String("agent-egress-policy", "/etc/email-app/egress-policy.json", "the agent's egress policy (protojson)")
+	agentName := flag.String("agent-name", "mail-agent", "actor name of each user's agent")
 	routerURL := flag.String("router-url", "https://atenet-router.ate-system.svc:443", "Substrate ingress router")
 	routerName := flag.String("router-server-name", "atenet-router.ate-system.svc", "router TLS server name")
 	identityBundle := flag.String("identity-bundle", "/run/podidentity.podcert.ate.dev/credential-bundle.pem", "this pod's identity cert+key, presented to the router")
@@ -45,44 +46,54 @@ func main() {
 		slog.Error("bad --users", "err", err)
 		os.Exit(2)
 	}
-	pool, err := tlsutil.LoadPool(*jwksCA)
+	tmpl, err := substrate.LoadTemplate(*templatePath)
 	if err != nil {
-		slog.Error("loading JWKS CA", "err", err)
+		slog.Error("loading actor template", "err", err)
 		os.Exit(1)
 	}
-	jwksClient := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
+	policy, err := substrate.LoadPolicy(*policyPath)
+	if err != nil {
+		slog.Error("loading egress policy", "err", err)
+		os.Exit(1)
+	}
+	conn, err := substrate.Dial(*ateAPI, *ateAPIName, *serviceDNSCA, *ateAPIToken)
+	if err != nil {
+		slog.Error("Substrate API client", "err", err)
+		os.Exit(1)
+	}
 
 	app := &emailapp.App{
 		AuthManager: &authmanager.Client{Provider: *authProvider, Token: authmanager.MetadataTokenSource(nil)},
-		Verifier: &actorjwt.Verifier{
-			Issuer:   *issuer,
-			Audience: *audience,
-			Keys:     &actorjwt.HTTPKeys{URL: *jwksURL, Client: jwksClient},
+		Provisioner: &substrate.Provisioner{
+			Client:    ateapi.NewControlClient(conn),
+			Template:  tmpl,
+			Policy:    policy,
+			ActorName: *agentName,
 		},
 		Scope:       *scope,
 		ContinueURL: *continueURL,
 		Users:       userMap,
 	}
+
+	opMux := http.NewServeMux()
+	opMux.HandleFunc("POST /signup", app.HandleSignup)
+	opMux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	if *driveActor != "" {
-		rc, err := emailapp.RouterClient(*identityBundle, *jwksCA, *routerName)
+		rc, err := emailapp.RouterClient(*identityBundle, *serviceDNSCA, *routerName)
 		if err != nil {
 			slog.Error("router client", "err", err)
 			os.Exit(1)
 		}
 		d := &emailapp.Driver{RouterURL: *routerURL, Actor: *driveActor, Client: rc}
-		go func() {
-			srv := &http.Server{Addr: *driver, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
-			slog.Error("driver listener exited", "err", srv.ListenAndServe())
-			os.Exit(1)
-		}()
+		opMux.Handle("/agent/", d.Handler())
 	}
 	go func() {
-		srv := &http.Server{Addr: *public, Handler: app.PublicHandler(), ReadHeaderTimeout: 10 * time.Second}
-		slog.Error("public listener exited", "err", srv.ListenAndServe())
+		srv := &http.Server{Addr: *operator, Handler: opMux, ReadHeaderTimeout: 10 * time.Second}
+		slog.Error("operator listener exited", "err", srv.ListenAndServe())
 		os.Exit(1)
 	}()
-	slog.Info("email-app serving", "internal", *internal, "public", *public, "continue_url", *continueURL, "users", len(userMap))
-	srv := &http.Server{Addr: *internal, Handler: app.InternalHandler(), ReadHeaderTimeout: 10 * time.Second}
-	slog.Error("internal listener exited", "err", srv.ListenAndServe())
+	slog.Info("email app listening", "public", *public, "operator", *operator)
+	srv := &http.Server{Addr: *public, Handler: app.PublicHandler(), ReadHeaderTimeout: 10 * time.Second}
+	slog.Error("public listener exited", "err", srv.ListenAndServe())
 	os.Exit(1)
 }

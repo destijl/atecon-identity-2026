@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Pleading the Agent — "scoped secret" rung: an agent with zero credentials
-# reads Alice's Gmail through an OAuth token that Substrate's egress gateway
-# injects on the way out.
+# Pleading the Agent — "scoped secret" rung. Two parts, as on slides 13-14:
+#   sign-up: Alice signs up at email-app and consents to gmail.readonly; the
+#            app then creates her atespace, agent and egress policy.
+#   request: the agent, holding no credentials, reads her Gmail through an
+#            OAuth token Substrate's egress gateway injects on the way out.
 #
 #   demo/demo.sh                 interactive (ENTER advances each step)
 #   demo/demo.sh -n              unattended (no typing or pauses; still waits
 #                                for you to click through consent)
 #   TYPE_SPEED_OVERRIDE=40 demo/demo.sh   faster typing (needs pv)
 #
-# Run demo/reset.sh first so the consent screen shows again.
+# Run demo/reset.sh first: it deletes Alice's agent and revokes her grant.
 #
-# The operator talks to the agent through the email app, which reaches it via
-# Substrate's ingress router with the app's own pod identity:
+# The operator talks to the email app's operator port, which signs Alice up
+# and reaches her agent via Substrate's ingress router with its pod identity:
 #   you -> kubectl port-forward -> email-app (:8070) -> atenet-router -> actor
 # No -u: demo-magic.sh reads unset variables.
 set -eo pipefail
@@ -30,7 +32,7 @@ export TERM="${TERM:-xterm-256color}"
 . "${ROOT}/third_party/demo-magic.sh"
 TYPE_SPEED="${TYPE_SPEED_OVERRIDE:-30}"
 command -v pv >/dev/null || unset TYPE_SPEED   # no pv: print commands instantly
-DEMO_PROMPT="${GREEN}➜ ${CYAN}email-app ${COLOR_RESET}"
+DEMO_PROMPT="${GREEN}➜ ${COLOR_RESET}"
 DEMO_CMD_COLOR="${WHITE}"
 if $UNATTENDED; then NO_WAIT=true; unset TYPE_SPEED; fi
 
@@ -62,7 +64,12 @@ if ! curl -fsS -o /dev/null -m 2 "localhost:${PORT}/readyz" 2>/dev/null; then
 fi
 START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# On-screen helper: "agent <op>" asks Alice's agent to do something.
+# On-screen helpers. "email-app signup <email>" signs a user up; "agent <op>"
+# asks Alice's agent to do something, through the app.
+email-app() {
+  [[ "$1" == signup ]] || return 1
+  curl -sS -m 60 -X POST "localhost:${PORT}/signup?email=$2" | sed "s/${DEMO_EMAIL}/${DISPLAY_EMAIL}/g"
+}
 agent() {
   local method=GET; [[ "$1" == trash ]] && method=POST
   curl -sS -m 60 -X "${method}" "localhost:${PORT}/agent/$1" | sed "s/${DEMO_EMAIL}/${DISPLAY_EMAIL}/g" | jq -C .
@@ -84,54 +91,58 @@ section() {
   banner "$@"
 }
 
-section "1. Alice's email agent runs in a Substrate sandbox (atespace ${ATESPACE}). Its egress policy:"
-p "kubectl ate get egress-policy ${ACTOR} -a ${ATESPACE} -o yaml"
-kubectl ate get egress-policy "${ACTOR}" -a "${ATESPACE}" -o yaml 2>/dev/null \
-  | awk '/^metadata:/{skip=1; next} /^[^ ]/{skip=0} !skip'
-echo
-note "gmail.googleapis.com: the gateway swaps in Alice's OAuth token (gmail.readonly) from a credential provider"
-note "email-app (consent links): the gateway swaps in a short-lived actor JWT, so the app knows which agent is asking"
-note "anything else: denied"
-
-section "2. The OAuth client, registered in Google Cloud Agent Auth Manager"
+section "SIGN-UP  1. The app's OAuth client, registered in Google Cloud Agent Auth Manager"
 p "gcloud agent-identity auth-providers describe ${AUTH_PROVIDER_NAME} --location ${REGION}"
 gcloud agent-identity auth-providers describe "${AUTH_PROVIDER_NAME}" --project "${PROJECT_ID}" --location "${REGION}" \
   --format=json 2>/dev/null \
   | jq -C '{allowedScopes, redirectUrl: .authProviderTypeParams.threeLeggedOauth.redirectUrl, continueUri: .authProviderTypeParams.threeLeggedOauth.defaultContinueUri}'
 echo
 note "allowedScopes: the most this client can ever be granted (read-only Gmail)"
-note "redirectUrl: Google returns the code to Auth Manager, which stores the tokens; the agent never sees them"
-note "continueUri: Auth Manager then sends Alice's browser back to the email app to finish"
+note "redirectUrl: Google returns the code to Auth Manager, which stores the tokens"
+note "continueUri: Auth Manager then sends Alice's browser back to the email app"
 
-section "3. The agent searches Alice's Gmail for subject \"Agent Substrate Day:\""
-pe "agent search"
-note "403 from Substrate's egress gateway: Alice hasn't granted access yet. Ask the app for a consent link."
-p "agent consent"
-CONSENT="$(curl -sS -m 60 "localhost:${PORT}/agent/consent")"
-jq -C '.authorizationUrl |= (if . then (.[0:60] + "…") else . end)' <<<"${CONSENT}"
-URL="$(jq -r '.authorizationUrl // empty' <<<"${CONSENT}")"
+section "SIGN-UP  2. Alice signs up at the email app; it asks Auth Manager for her consent link"
+p "email-app signup ${DISPLAY_EMAIL}"
+SIGNUP="$(email-app signup "${DISPLAY_EMAIL}")"
+jq -C '.authorizationUrl |= (if . then (.[0:60] + "…") else . end)' <<<"${SIGNUP}"
+URL="$(jq -r '.authorizationUrl // empty' <<<"${SIGNUP}")"
 [[ -n "${URL}" ]] && printf '%s\n' "${URL}" > "${CACHE}/consent-url.txt"
+echo
+note "No agent exists yet. Auth Manager keys Alice's grant by her atespace name, ${ATESPACE}."
 
-section "4. Alice opens the link and grants read-only access (gmail.readonly)"
+section "SIGN-UP  3. Alice opens the link and grants read-only access (gmail.readonly)"
 echo
 printf '%s\n' "${URL:-no consent link, see the response above}"
 echo
-printf '%s' "   waiting for consent "
-# Watch the app's log; asking /consent again would start a new attempt.
-until kubectl -n email-app logs deploy/email-app --since-time="${START}" 2>/dev/null | grep -q '"consent finalized"'; do
+printf '%s' "   waiting for consent and for the app to create Alice's agent "
+# Watch the app's log; signing up again would start a new consent attempt.
+until kubectl -n email-app logs deploy/email-app --since-time="${START}" 2>/dev/null | grep -q '"actor created"'; do
+  if kubectl -n email-app logs deploy/email-app --since-time="${START}" 2>/dev/null | grep -q '"creating agent failed"'; then
+    echo; echo "   the app could not create the agent:"; kubectl -n email-app logs deploy/email-app --since-time="${START}" | grep '"creating agent failed"' | tail -1
+    exit 1
+  fi
   printf '.'; sleep 2
 done
 echo " ✓"
 
-section "5. Same call, same sandbox"
-pe "agent search"
-note "The agent never held a token: the gateway added it on the way out."
+section "SIGN-UP  4. The app created Alice's atespace, agent and egress policy through the Substrate API"
+pe "kubectl ate get actors -a ${ATESPACE}"
+p "kubectl ate get egress-policy ${ACTOR} -a ${ATESPACE} -o yaml"
+kubectl ate get egress-policy "${ACTOR}" -a "${ATESPACE}" -o yaml 2>/dev/null \
+  | awk '/^metadata:/{skip=1; next} /^[^ ]/{skip=0} !skip'
+echo
+note "One rule: for gmail.googleapis.com the gateway swaps in Alice's OAuth token from a credential provider."
+note "The URI names only the scope; the provider takes the user from the actor's atespace. Anything else: denied."
 
-section "6. The agent tries to trash a message"
+section "REQUEST  5. The agent searches Alice's Gmail for subject \"Agent Substrate Day:\""
+pe "agent search"
+note "The agent sent a placeholder header; the gateway added the token on the way out."
+
+section "REQUEST  6. The agent tries to trash a message"
 pe "agent trash"
 note "Google refuses: the token is scoped to gmail.readonly"
 
-section "7. What the logs say"
+section "REQUEST  7. What the logs say"
 p "kubectl logs -n ate-system deploy/atenet-egress -c envoy | grep gmail"
 # One line per Gmail call the agent made; the per-message metadata reads
 # are left out to keep it short (and keep message IDs off screen).

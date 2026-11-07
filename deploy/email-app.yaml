@@ -1,24 +1,78 @@
 # The email app: the "application", on plain Kubernetes outside Substrate.
-#   - Service email-app (ClusterIP :8080, /consent): only the Substrate egress
-#     gateway may connect, so only actors (with an injected actor JWT) reach it.
 #   - Service email-app-callback (INTERNAL LoadBalancer :80 -> :8090,
 #     /oauth/continue): VPC-only. The browser reaches it through the
 #     callback-proxy Cloud Run service, which terminates TLS with a
 #     Google-managed cert (https://email-app-callback-<n>.<region>.run.app).
-#   - Port 8070 (/agent/{op}): the operator drives the user's agent. No Service
-#     and no NetworkPolicy ingress rule; reachable only by kubectl port-forward.
-#     The app calls its agent through the Substrate ingress router with its pod
-#     identity.
+#   - Port 8070 (/signup, /agent/{op}): the operator signs users up and drives
+#     their agent. No Service and no NetworkPolicy ingress rule; reachable only
+#     by kubectl port-forward. The app calls the agent through the Substrate
+#     ingress router with its pod identity.
+#   - After a user consents, the app creates the user's atespace, agent actor
+#     and egress policy through the Substrate API (ate-api), authenticating
+#     with a projected ServiceAccount token. It holds the global owner role
+#     (deploy/global-access-policy.yaml), which creating atespaces requires.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: email-app
+  labels:
+    # Lets pods here reach ate-api (its NetworkPolicy admits this label).
+    ate.dev/api-access: "true"
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: email-app
   namespace: email-app
+---
+# What the app gives each user's agent. ${AGENT_IMAGE} is filled in by
+# scripts/up.sh; the app sets metadata.atespace to the user's atespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: email-app-agent
+  namespace: email-app
+data:
+  # ActorTemplate (protojson). No credentials: only a CA bundle that trusts
+  # the egress gateway's TLS interception.
+  actor-template.json: |
+    {
+      "metadata": {"name": "mail-agent"},
+      "workerSelector": {"matchLabels": {"workload": "email-agent"}},
+      "containers": [{
+        "name": "agent",
+        "image": "${AGENT_IMAGE}",
+        "command": ["/app", "--address=:80"],
+        "env": [{"name": "SSL_CERT_FILE", "value": "/run/ate/egress-trust-bundle/trust-bundle.pem"}],
+        "volumeMounts": [{"name": "system-info", "mountPath": "/run/ate"}],
+        "wakeupProbe": {"httpGet": {"path": "/readyz", "port": 80}}
+      }],
+      "volumes": [{
+        "name": "system-info",
+        "systemInfo": {"dataSources": [{"trustBundle": {
+          "names": ["egress-mitm.ate.dev", "system-roots.ate.dev"],
+          "path": "egress-trust-bundle/trust-bundle.pem"
+        }}]}
+      }],
+      "resources": {"limits": {"cpuMillicores": 500, "memoryBytes": "268435456"}}
+    }
+  # EgressPolicy (protojson): one rule. For gmail.googleapis.com the gateway
+  # replaces Authorization with the user's OAuth token, fetched by the Auth
+  # Manager credential provider. The URI names only the scope; the provider
+  # takes the user from the actor's atespace. Everything else is denied.
+  egress-policy.json: |
+    {
+      "rules": [{
+        "https": {
+          "hostnames": ["gmail.googleapis.com"],
+          "effects": {"replaceHeaders": [{
+            "header": "Authorization",
+            "prefix": "Bearer ",
+            "credentialUri": "ate-secret://authmanager.demo/gmail-oauth/gmail.readonly"
+          }]}
+        }
+      }]
+    }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -48,24 +102,22 @@ spec:
       - name: email-app
         image: ${EMAIL_APP_IMAGE}
         args:
-        - --internal-address=:8080
         - --public-address=:8090
+        - --operator-address=:8070
         - --auth-provider=${AUTH_PROVIDER}
         - --continue-url=${CONTINUE_URL}
         - --users=${DISPLAY_EMAIL}=${DEMO_EMAIL}
-        - --actor-jwt-audience=email-app
-        - --drive-actor=${ATESPACE}/email-agent
+        - --agent-name=${ACTOR}
+        - --drive-actor=${ATESPACE}/${ACTOR}
         ports:
-        - name: internal
-          containerPort: 8080
         - name: public
           containerPort: 8090
-        - name: driver
+        - name: operator
           containerPort: 8070
         readinessProbe:
           httpGet:
             path: /readyz
-            port: internal
+            port: public
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
@@ -80,7 +132,24 @@ spec:
         - name: podidentity
           mountPath: /run/podidentity.podcert.ate.dev
           readOnly: true
+        - name: ate-api-token
+          mountPath: /run/ate-api-token
+          readOnly: true
+        - name: agent
+          mountPath: /etc/email-app
+          readOnly: true
       volumes:
+      # Token for ate-api: principal system:serviceaccount:email-app:email-app.
+      - name: ate-api-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: api.ate-system.svc
+              expirationSeconds: 3600
+              path: token
+      - name: agent
+        configMap:
+          name: email-app-agent
       - name: podidentity
         projected:
           sources:
@@ -97,19 +166,6 @@ spec:
                 matchLabels:
                   podcert.ate.dev/canarying: live
               path: trust-bundle.pem
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: email-app
-  namespace: email-app
-spec:
-  selector:
-    app: email-app
-  ports:
-  - name: internal
-    port: 8080
-    targetPort: internal
 ---
 apiVersion: v1
 kind: Service
@@ -138,17 +194,6 @@ spec:
       app: email-app
   policyTypes: [Ingress]
   ingress:
-  # Actors, via the Substrate egress gateway only.
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: ate-system
-      podSelector:
-        matchLabels:
-          app: atenet-egress
-    ports:
-    - protocol: TCP
-      port: 8080
   # Browsers, via Cloud Run callback-proxy -> internal load balancer.
   - ports:
     - protocol: TCP

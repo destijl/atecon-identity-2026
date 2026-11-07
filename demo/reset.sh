@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Put the demo back to its starting state so it can be re-run:
-#   - recreate the user's atespace, the agent actor and its egress policy
-#   - revoke the user's Auth Manager grant so the consent screen shows again
-#   - restart the credential provider (drops its token cache)
-# Only touches demo-owned objects (the user's atespace and its actor).
+# Put the demo back to before Alice signed up, so it can be re-run:
+#   - revoke Alice's Auth Manager grant so the consent screen shows again
+#   - delete her agent, its template and her atespace (email-app recreates
+#     them when she signs up)
+#   - restart the credential provider (drops its token cache) and the email
+#     app (drops any half-finished sign-up)
+# Only touches demo-owned objects.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,7 +13,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT}/demo.env"
 # shellcheck source=/dev/null
 source "${ROOT}/scripts/lib.sh"
-need kubectl gcloud envsubst
+need kubectl gcloud
 ensure_kubeconfig
 ensure_kubectl_ate
 
@@ -19,21 +21,18 @@ step "Revoke Auth Manager grant for ${ATESPACE}"
 gcloud agent-identity auth-providers revoke-authorization "${AUTH_PROVIDER##*/}" \
   --project "${PROJECT_ID}" --location "${REGION}" --user-id "${ATESPACE}" >/dev/null 2>&1 || true
 
-step "Recreate atespace ${ATESPACE} and actor ${ACTOR}"
-AGENT_REF="$(agent_ref)"   # resolve before deleting anything
+step "Delete atespace ${ATESPACE} and its agent"
 kubectl-ate delete actor "${ACTOR}" -a "${ATESPACE}" >/dev/null 2>&1 || true
-kubectl-ate create atespace "${ATESPACE}" >/dev/null 2>&1 || true
-kubectl-ate delete actor-template email-agent -a "${ATESPACE}" >/dev/null 2>&1 || true
-AGENT_IMAGE="${AGENT_REF}" ATESPACE="${ATESPACE}" \
-  envsubst '${AGENT_IMAGE} ${ATESPACE}' < "${ROOT}/deploy/actor-template.yaml.tmpl" > "${CACHE}/actor-template.yaml"
-kubectl-ate create actor-template -f "${CACHE}/actor-template.yaml"
-kubectl-ate create actor "${ACTOR}" -a "${ATESPACE}" --template email-agent
-kubectl-ate create egress-policy "${ACTOR}" -a "${ATESPACE}" -f "${ROOT}/deploy/egress-policy.yaml"
+kubectl-ate delete actor-template "${ACTOR}" -a "${ATESPACE}" >/dev/null 2>&1 || true
+kubectl-ate delete atespace "${ATESPACE}" >/dev/null 2>&1 || true
+if kubectl-ate get atespace "${ATESPACE}" >/dev/null 2>&1; then
+  die "atespace ${ATESPACE} still exists; check: kubectl ate get actors -a ${ATESPACE}"
+fi
 
-step "Restart the credential provider (clears its token cache)"
+step "Restart the credential provider and the email app"
 kubectl -n ate-system rollout restart deploy/authmanager-provider >/dev/null
+kubectl -n email-app rollout restart deploy/email-app >/dev/null
 kubectl -n ate-system rollout status deploy/authmanager-provider --timeout=120s >/dev/null
+kubectl -n email-app rollout status deploy/email-app --timeout=120s >/dev/null
 
-step "Wake the actor"
-kubectl-ate resume actor "${ACTOR}" -a "${ATESPACE}" >/dev/null 2>&1 || true
 step "Ready. Run demo/demo.sh"

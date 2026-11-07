@@ -2,8 +2,8 @@
 // (substrate.credprovider.v1.CredentialProvider) backed by Google Cloud
 // Agent Auth Manager.
 //
-// URIs look like ate-secret://<provider-name>/oauth/<scope>, for example
-// ate-secret://authmanager.demo/oauth/gmail.readonly. (Substrate requires at
+// URIs look like ate-secret://<provider-name>/gmail-oauth/<scope>, for example
+// ate-secret://authmanager.demo/gmail-oauth/gmail.readonly. (Substrate requires at
 // least two path segments.) The user is never in the URI:
 // it is derived from the actor's atespace, which comes from the SPIFFE ID the
 // egress gateway verified. An actor therefore can only ever get its own
@@ -114,9 +114,9 @@ func (s *Server) parseURI(raw string) (string, error) {
 		return "", fmt.Errorf("unparseable URI: %w", err)
 	}
 	if u.Scheme != "ate-secret" || u.Host != s.Name || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-		return "", fmt.Errorf("URI must be ate-secret://%s/oauth/<scope>", s.Name)
+		return "", fmt.Errorf("URI must be ate-secret://%s/gmail-oauth/<scope>", s.Name)
 	}
-	scope, ok := strings.CutPrefix(u.Path, "/oauth/")
+	scope, ok := strings.CutPrefix(u.Path, "/gmail-oauth/")
 	if !ok || !s.Scopes[scope] {
 		return "", fmt.Errorf("scope %q is not served", scope)
 	}

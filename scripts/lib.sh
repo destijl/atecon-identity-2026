@@ -8,9 +8,11 @@ export DOCKER_CONFIG="${CACHE}/docker"
 export REGISTRY_AUTH_FILE="${DOCKER_CONFIG}/config.json"
 export PATH="${CACHE}/bin:${PATH}"
 
-ATESPACE="$(printf '%s' "${DISPLAY_EMAIL}" | sed -E 's/[@._+]/-/g; s/-+/-/g; s/^-|-$//g')"
+# One atespace per user: "u-" + the email's local part (alice@gmail.com ->
+# u-alice), the same rule as internal/identity. email-app creates it at sign-up.
+ATESPACE="u-$(printf '%s' "${DISPLAY_EMAIL%%@*}" | sed -E 's/[._+]/-/g; s/-+/-/g; s/-$//')"
 export ATESPACE
-export ACTOR="email-agent"
+export ACTOR="mail-agent"
 
 step() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -63,18 +65,6 @@ ensure_kubectl_ate() {
     || die "${SUBSTRATE_DIR} is not at ${SUBSTRATE_COMMIT}"
   step "Build kubectl-ate (${SUBSTRATE_COMMIT})"
   (cd "${SUBSTRATE_DIR}" && go build -o "${CACHE}/bin/kubectl-ate" ./cmd/kubectl-ate)
-}
-
-# agent_ref prints the digest-pinned agent image: the one this machine last
-# built (.cache/agent.ref), else the newest one in Artifact Registry (for
-# machines that only run the demo, e.g. a laptop).
-agent_ref() {
-  local ref=""
-  [[ -s "${CACHE}/agent.ref" ]] && ref="$(cat "${CACHE}/agent.ref")"
-  [[ -n "${ref}" ]] || ref="$(gcloud artifacts docker images list "${IMAGE_REPO}/agent" \
-    --sort-by=~UPDATE_TIME --limit=1 --format='value(format("{0}@{1}",package,version))' 2>/dev/null)"
-  [[ -n "${ref}" ]] || die "no agent image: run scripts/up.sh first"
-  printf '%s\n' "${ref}"
 }
 
 # log_all_egress makes Substrate's egress gateway log every actor request.

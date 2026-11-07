@@ -25,20 +25,22 @@ var (
 	labelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 )
 
-// AtespaceForEmail returns the atespace that holds email's actors:
-// alice@gmail.com becomes alice-gmail-com. It rejects anything that isn't a
-// plain lowercase address, so two different emails can't silently collide on
-// one atespace through case or Unicode folding.
+// AtespaceForEmail returns the atespace that holds email's actors: "u-" plus
+// the local part, so alice@gmail.com becomes u-alice. It rejects anything that
+// isn't a plain lowercase address, so two emails can't silently collide
+// through case or Unicode folding. Addresses with the same local part on
+// different domains do collide; the app rejects such a user list (ParseUsers).
 func AtespaceForEmail(email string) (string, error) {
 	if !emailRE.MatchString(email) {
 		return "", fmt.Errorf("email %q must be a lowercase address like alice@gmail.com", email)
 	}
-	r := strings.NewReplacer("@", "-", ".", "-", "_", "-", "+", "-")
-	ns := r.Replace(email)
+	local, _, _ := strings.Cut(email, "@")
+	r := strings.NewReplacer(".", "-", "_", "-", "+", "-")
+	ns := "u-" + r.Replace(local)
 	for strings.Contains(ns, "--") {
 		ns = strings.ReplaceAll(ns, "--", "-")
 	}
-	ns = strings.Trim(ns, "-")
+	ns = strings.TrimRight(ns, "-")
 	if len(ns) > maxLabel || !labelRE.MatchString(ns) {
 		return "", fmt.Errorf("email %q does not map to a valid atespace name (got %q)", email, ns)
 	}
@@ -64,11 +66,6 @@ func FromSPIFFEID(id string) (Actor, error) {
 		return Actor{}, fmt.Errorf("actor SPIFFE ID %q is not in trust domain %s", id, TrustDomain)
 	}
 	return fromPath(strings.TrimPrefix(u.Path, "/"), id)
-}
-
-// FromJWTSubject parses actor/<atespace>/<name>, the sub of an actor JWT.
-func FromJWTSubject(sub string) (Actor, error) {
-	return fromPath(sub, sub)
 }
 
 func fromPath(p, orig string) (Actor, error) {

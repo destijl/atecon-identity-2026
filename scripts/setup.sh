@@ -105,6 +105,6 @@ step "Install Substrate and deploy the demo"
 cat <<EOF
 
 Environment ready. Run:
-  demo/reset.sh   # fresh actor, revoke any earlier grant
+  demo/reset.sh   # delete Alice's agent and atespace, revoke her grant
   demo/demo.sh    # or -n for unattended
 EOF
