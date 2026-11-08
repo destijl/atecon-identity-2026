@@ -1,10 +1,8 @@
 # Pleading the Agent: OAuth without a token in the sandbox
 
-Demo for the talk *Pleading the Agent: proof of agent identity* (Agent Substrate Day, Nov 2026). It demonstrates the "scoped secret" rung of the talk's attribution ladder.
+Demo for the talk *Pleading the Agent: proof of agent identity* (Agent Substrate Day, Nov 2026).
 
 An AI agent runs inside an [Agent Substrate](https://github.com/agent-substrate/substrate) gVisor sandbox with **zero ambient credentials**. It reads a user's Gmail using an OAuth token stored and managed by Google Cloud Agent Auth Manager. Substrate's egress gateway transparently injects the token into outgoing requests based on the actor's verified SPIFFE identity. The sandbox never holds a token, the token is strictly bounded to `gmail.readonly`, and all API calls are logged under the agent's cryptographic identity.
-
-OAuth is what most production APIs (including all Google APIs) support today. This demo shows how to integrate OAuth into sandboxed AI agents without handing credentials to untrusted model code.
 
 ## Architecture
 
