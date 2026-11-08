@@ -99,17 +99,7 @@ section() {
   banner "$@"
 }
 
-section "SIGN-UP  1. The app's OAuth client, registered in Google Cloud Agent Auth Manager"
-p "gcloud agent-identity auth-providers describe ${AUTH_PROVIDER_NAME} --location ${REGION}"
-gcloud agent-identity auth-providers describe "${AUTH_PROVIDER_NAME}" --project "${PROJECT_ID}" --location "${REGION}" \
-  --format=json 2>/dev/null \
-  | jq -C '{allowedScopes, redirectUrl: .authProviderTypeParams.threeLeggedOauth.redirectUrl, continueUri: .authProviderTypeParams.threeLeggedOauth.defaultContinueUri}'
-echo
-note "allowedScopes: the most this client can ever be granted (read-only Gmail)"
-note "redirectUrl: Google returns the code to Auth Manager, which stores the tokens"
-note "continueUri: Auth Manager then sends Alice's browser back to the email app"
-
-section "SIGN-UP  2. Alice signs up at the email app to grant read-only access (gmail.readonly)"
+section "SIGN-UP  1. Alice signs up at the email app to grant read-only access (gmail.readonly)"
 pe "email-app signup ${DISPLAY_EMAIL}"
 echo
 printf '%s' "   waiting for consent and for the app to create Alice's agent "
@@ -123,30 +113,26 @@ until kubectl -n email-app logs deploy/email-app --since-time="${START}" 2>/dev/
 done
 echo " ✓"
 
-section "SIGN-UP  3. The app created Alice's atespace, agent and egress policy through the Substrate API"
+section "SIGN-UP  2. The app created Alice's atespace, agent and egress policy through the Substrate API"
 pe "kubectl ate get actors -a ${ATESPACE}"
 p "kubectl ate get egress-policy ${ACTOR} -a ${ATESPACE} -o yaml"
 kubectl ate get egress-policy "${ACTOR}" -a "${ATESPACE}" -o yaml 2>/dev/null \
   | awk '/^metadata:/{skip=1; next} /^[^ ]/{skip=0} !skip'
 echo
 
-section "REQUEST  4. The agent searches Alice's Gmail for subject \"Agent Substrate Day:\""
+section "REQUEST  3. The agent searches Alice's Gmail for subject \"Agent Substrate Day:\""
 pe "agent search"
 note "The agent sent a placeholder header; the gateway added the token on the way out."
 
-section "REQUEST  5. The agent tries to trash a message"
+section "REQUEST  4. The agent tries to trash a message"
 pe "agent trash"
 note "Google refuses: the token is scoped to gmail.readonly"
 
-section "REQUEST  6. What the logs say"
+section "REQUEST  5. What the logs say"
 p "kubectl logs -n ate-system deploy/atenet-egress -c envoy | grep gmail"
 # One line per Gmail call the agent made; the per-message metadata reads
 # are left out to keep it short (and keep message IDs off screen).
 kubectl -n ate-system logs deploy/atenet-egress -c envoy --since-time="${START}" 2>/dev/null \
   | grep '"leg":"mitm"' | grep gmail.googleapis.com \
   | jq -C -c 'select(.path | test("/messages/[^/]+$") | not) | {actor, method, path: (.path|sub("\\?.*";"")), status}' || true
-echo
-p "kubectl logs -n ate-system deploy/authmanager-provider | grep injected"
-kubectl -n ate-system logs deploy/authmanager-provider --since-time="${START}" 2>/dev/null \
-  | grep 'credential injected' | tail -1 | jq -C -c '{msg, actor, user, scope}' || true
 pause

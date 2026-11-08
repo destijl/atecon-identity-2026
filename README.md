@@ -68,16 +68,15 @@ flowchart TD
 
 ## Walkthrough: What You See in the Demo
 
-The demo runs in ~90 seconds across 6 steps:
+The demo runs in ~90 seconds across 5 steps:
 
 | # | Step | Command | What it demonstrates |
 |---|---|---|---|
-| 1 | OAuth Client Registration | `gcloud agent-identity auth-providers describe` | Inspects the Auth Provider configuration in Auth Manager: the allowed scope (`gmail.readonly`), Auth Manager's redirect callback URL, and the app's continue URI. |
-| 2 | Sign-Up & Consent | `email-app signup alice@gmail.com` | Signs Alice up. The app outputs the copy-paste consent URL and waits. The operator clicks through consent in the browser. |
-| 3 | Provisioned Agent & Policy | `kubectl ate get actors`, `kubectl ate get egress-policy` | Shows that the app created atespace `u-alice`, actor `mail-agent`, and a 1-rule egress policy allowing only `gmail.googleapis.com` with token injection. |
-| 4 | Search Mail (200 OK) | `agent search` | The agent searches Alice's inbox for subject "Agent Substrate Day:". Google returns 200 OK with subjects. The sandbox never held the token. |
-| 5 | Trash Mail (403 Refused) | `agent trash` | The agent attempts to delete a message. Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`. |
-| 6 | Identity & Audit Logs | `kubectl logs` | Egress gateway logs show every request attributed to the agent's SPIFFE ID; credential provider logs confirm token injection scoped to `u-alice`. |
+| 1 | Sign-Up & Consent | `email-app signup alice@gmail.com` | Signs Alice up. The app outputs the copy-paste consent URL and waits. The operator clicks through consent in the browser. |
+| 2 | Provisioned Agent & Policy | `kubectl ate get actors`, `kubectl ate get egress-policy` | Shows that the app created atespace `u-alice`, actor `mail-agent`, and a 1-rule egress policy allowing only `gmail.googleapis.com` with token injection. |
+| 3 | Search Mail (200 OK) | `agent search` | The agent searches Alice's inbox for subject "Agent Substrate Day:". Google returns 200 OK with subjects. The sandbox never held the token. |
+| 4 | Trash Mail (403 Refused) | `agent trash` | The agent attempts to delete a message. Google refuses with 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`. |
+| 5 | Egress Logs | `kubectl logs` | Egress gateway logs show each Gmail call (200, 403) attributed to the agent's SPIFFE ID. |
 
 ## Component Layout
 
