@@ -2,6 +2,8 @@
 
 Demo for the talk *Pleading the Agent: proof of agent identity* (Agent Substrate Day, Nov 2026).
 
+[Talk slides are also in the repo](atecon2026_agent_identity_slides.pdf).
+
 An AI agent runs inside an [Agent Substrate](https://github.com/agent-substrate/substrate) gVisor sandbox with **zero ambient credentials**. It reads a user's Gmail using an OAuth token stored and managed by Google Cloud Agent Auth Manager. Substrate's egress gateway transparently injects the token into outgoing requests based on the actor's verified SPIFFE identity. The sandbox never holds a token, the token is strictly bounded to `gmail.readonly`, and all API calls are logged under the agent's cryptographic identity.
 
 ## Architecture
